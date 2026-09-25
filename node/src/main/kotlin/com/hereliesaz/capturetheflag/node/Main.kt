@@ -20,6 +20,7 @@ import java.io.File
  * ~~~
  * PORT=7447 DATA_DIR=./node-data ARCHIVE=/path/to/private-repo-clone ./gradlew :node:run
  * PORT=7447 DATA_DIR=./node-data ARCHIVE=~/GoogleDrive/ctf-archive ARCHIVE_SYNC=external ./gradlew :node:run
+ * REFEREES=<pubkey>,<pubkey>,... ./gradlew :node:run     # the shared referee roster
  * ~~~
  */
 fun main() = runBlocking {
@@ -37,7 +38,9 @@ fun main() = runBlocking {
     val open = OpenData()
     val surveyor = CityOnboarding(open.boundaries, open.population, open.features)
     val cities = archive?.let { SurveyCache(it, OnboardedDirectory(surveyor)) } ?: OnboardedDirectory(surveyor)
-    val referee = Referee(keys, store, cities)
+    // Every node must list the same roster: panels are drawn from it. Alone, a node is its own panel of one.
+    val roster = System.getenv("REFEREES")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)?.plus(keys.pub)?.distinct() ?: listOf(keys.pub)
+    val referee = Referee(keys, store, cities, roster)
     referee.restore()
 
     println("node ${keys.pub} on ws://0.0.0.0:$port/ with ${store.size()} events" + (archive?.let { ", archiving to ${it.root}" } ?: ""))

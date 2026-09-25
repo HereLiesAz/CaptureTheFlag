@@ -7,7 +7,7 @@ A city, cut in half. Two teams. Seven days. One photograph ends it.
 | Rule | Where |
 |---|---|
 | City split by a straight line, chosen at random from the fairest candidates. Weighted: population 0.4, geography 0.3 (cuts that follow rivers/highways score better), buildings 0.2, land 0.1 | `rules/CityPartitioner.kt` |
-| 24 h sign-up → 1 h flag placement → 7 days of play → tie. Next round starts on request after any ending | `engine/GameEngine.kt`, `rules/GameRules.kt` |
+| 24 h sign-up → 1 h flag placement → 4 days of play → tie. Next round starts on request after any ending | `engine/GameEngine.kt`, `rules/GameRules.kt` |
 | Fewer than 2 sign-ups: round cancelled | `GameEngine.closeSignup` |
 | Random, size-balanced teams; one random captain each; captain names up to 2 co-captains | `rules/TeamAssignment.kt` |
 | The flag is not an object: leaders choose something already there that cannot move (a statue, a doorway, a mural) at a public space, public building or business, and register it with its address and a photo with GPS EXIF. Venue must sit inside the team's own territory | `Verification.flagRegistration` |

@@ -198,7 +198,7 @@ class RulesTest {
         assertTrue(g.team(p.team.opponent).none { it.id in pts })
     }
 
-    @Test fun sevenDaysWithoutCaptureIsATie() {
+    @Test fun playWindowWithoutCaptureIsATie() {
         val g = activeGame()
         val deadline = (g.phase as GamePhase.Active).deadline
         assertEquals(Outcome.Tie, (engine.tick(g, deadline).game.phase as GamePhase.Ended).outcome)

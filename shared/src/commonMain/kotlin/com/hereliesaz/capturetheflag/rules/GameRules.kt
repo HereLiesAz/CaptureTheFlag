@@ -8,7 +8,7 @@ object GameRules {
 
     const val SIGNUP_WINDOW = DAY
     const val FLAG_PLACEMENT_WINDOW = HOUR
-    const val PLAY_WINDOW = 7 * DAY
+    const val PLAY_WINDOW = 4 * DAY
 
     const val MIN_PLAYERS_PER_TEAM = 1
     const val MAX_CO_CAPTAINS = 2

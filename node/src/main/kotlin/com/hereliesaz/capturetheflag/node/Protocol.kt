@@ -8,6 +8,8 @@ import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 
 /** Event kinds from docs/DECENTRALIZED.md. */
 object Kinds {
@@ -28,7 +30,7 @@ object Kinds {
 /**
  * What a player asks for, as the content of a kind-33000 event. The signer's public key is the
  * player id. [Open] is plaintext tagged `["c", city]`; everything else is tagged `["g", gameId]`
- * and NIP-44 encrypted to the game's referee (the author of its `game.open`).
+ * and [Sealed] to every referee on the game's panel (listed in its `game.open`).
  */
 @Serializable
 sealed interface Action {
@@ -50,7 +52,7 @@ sealed interface Action {
     @Serializable @SerialName("bounty") data class Bounty(val target: String) : Action
 }
 
-/** A position report, content of kind 33001, NIP-44 encrypted to the referee. */
+/** A position report, content of kind 33001, [Sealed] to the panel. */
 @Serializable
 data class Position(val lat: Double, val lng: Double, val at: Long, val accuracy: Double) {
     fun fix() = LocationFix(GeoPoint(lat, lng), at, accuracy)
@@ -118,3 +120,21 @@ data class Commit(val what: String, val who: String, val team: String? = null, v
 /** Content of a kind-34004 reveal, published once the round ends. */
 @Serializable
 data class Reveal(val secrets: List<Secret>)
+
+/**
+ * A player event's content inside a game: one NIP-44 payload per referee on the panel, keyed
+ * by referee pubkey. One event, one id, so every referee orders the same thing.
+ */
+object Sealed {
+    fun forPanel(body: String, sender: Keys, panel: List<String>): String =
+        Nostr.json.encodeToString(MapSerializer(String.serializer(), String.serializer()), panel.associateWith { Nip44.seal(body, sender, it) })
+
+    /** This referee's copy, or null if there isn't one or it doesn't open. */
+    fun open(content: String, keys: Keys, sender: String): String? = runCatching {
+        Nip44.open(Nostr.json.decodeFromString(MapSerializer(String.serializer(), String.serializer()), content).getValue(keys.pub), keys, sender)
+    }.getOrNull()
+}
+
+/** Content of a kind-32000 game.open: one per panel referee, each carrying its seed commitment. */
+@Serializable
+data class GameOpen(val open: String, val city: String, val deadline: Long, val panel: List<String>, val commit: String)

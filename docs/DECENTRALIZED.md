@@ -74,15 +74,17 @@ Each game gets **5 referees; 3 must agree** (a quorum). They are drawn from the 
 
 ### What they do
 
-1. **Order.** Every few seconds, each referee proposes the next batch of pending events. A batch is final when 3 of 5 have signed the same list. Ties break by lowest event id.
+1. **Order.** One referee leads each batch: it proposes the next list of pending events, and the others sign the same list if every event in it is real and unbatched. A batch is final when 3 of 5 have signed it. Each referee signs **one** batch per sequence number, ever, so two different batches can't both reach 3 unless somebody signs twice, and a double signature is public proof against its signer. If a batch goes unsigned for 15 seconds, the next referee on the panel leads.
 2. **Replay.** Each referee feeds the final batch into `GameEngine`, with the secrets only referees hold, and gets the same transition.
 3. **Attest.** Each signs an `outcome` with the transition's public parts: verdicts, awards, highlights, notices. Three matching outcomes make it official.
 4. **Deliver secrets.** Pings, trail updates and interrogation results go out as `ping` events encrypted to their recipients only. Any referee may send them; recipients ignore duplicates.
-5. **Tick.** Referees also submit a signed time tick every minute, so timed rules (pings, parole, deadlines, the 7-day clock) advance even when nobody acts. The engine's `now` is the median of the quorum's clocks for that batch.
+5. **Tick.** The leader proposes a batch at least every minute, empty if need be, so timed rules (pings, parole, deadlines, the 4-day clock) advance even when nobody acts.
 
 ### Time
 
-Every batch carries the median of its signers' clocks. Evidence freshness (2 minutes) is judged against the batch time, not the phone's. A phone with a wrong clock produces stale evidence and fails; the referees don't.
+Every batch carries its leader's clock. The others refuse to sign a batch dated more than 30 seconds ahead of their own clocks, or not after the last batch. Evidence freshness (2 minutes) is judged against the batch time, not the phone's. A phone with a wrong clock produces stale evidence and fails; the referees don't.
+
+A batch dated in the past is still signed. Its signers are already committed to it, and refusing it would stall the game. So a lying leader can hold the clock back for the batches it leads (1 in 5), but never push it forward.
 
 ## Randomness
 
@@ -158,6 +160,7 @@ GitHub and Google are single companies, which is why the archive is a mirror and
 |---|---|
 | A referee goes silent for 10 minutes | The other 4 continue (3 is still a quorum). A replacement is drawn by the current seed and receives the secrets from the remaining referees, re-encrypted to it. |
 | Two referees silent | Replacements drawn as above. Play pauses (no batches) until 3 are live. The clock pauses too: deadlines extend by the pause. |
+| A referee signs two batches for the same sequence | Both signatures are public: proof. It loses eligibility. With 3 of 5, one double-signer and two honest referees who each saw a different batch could finalize both; 4 of 5 would close that, at the cost of stalling whenever two referees are down. |
 | Referees disagree on an outcome | The minority's outcome is ignored. Repeated disagreement costs eligibility. The disagreement is public, so anyone can replay and see who was wrong. |
 | A player's phone is offline | Its actions queue locally and are submitted on reconnect. Evidence freshness (2 min) still applies, so late evidence fails, as it should. |
 | A relay censors a player | Players publish to several relays; referees read from several. |
@@ -186,12 +189,12 @@ The first node (`node/`) proves the core loop, not the whole design. Built so fa
 
 1. **Relay.** A NIP-01 relay: WebSocket, `EVENT`/`REQ`/`CLOSE`, Schnorr signature checks, filters, persistence to disk.
 2. **Game kinds.** Accepts and indexes the kinds above.
-3. **Referee.** A single-referee mode (quorum of 1) that orders game `action` events, replays them through `GameEngine` with a commit-reveal seed, and publishes `outcome` and `radio` events. Multi-referee quorum comes next, once one referee is solid.
+3. **Referee panels.** Every node lists the same roster of referee keys (`REFEREES`). An open request draws a panel of 5 from it by the request's id. The panel runs the commit-reveal seed ceremony, then orders batches by rotating leader and 3-of-5 signatures, replays them through `GameEngine`, and each signs an `outcome`. Double signers are caught. A roster of one is a panel of one.
 4. **Surveyor.** Serves `city.survey` using the existing `onboarding/` pipeline.
 
 5. **Archive.** Mirrors to a git clone or a synced folder, bootstraps from it, and caches surveys there.
 6. **Secrets.** NIP-44 v2 (`Nip44.kt`), checked against the official test vectors. Every in-game player event (actions, positions, BLE keys) is sealed to the referee; anything sent in the clear is ruled `unreadable`. Pings go out as one sealed event per recipient. Accepted flags and BLE keys get a public `commit` (`sha256(preimage|salt)`, the salt an HMAC under the referee's key, so a restored referee reveals what the live one committed to) and a `reveal` when the round ends.
 
-What the prototype cuts, and must not ship with: one referee rules alone (the design says 3 of 5), evidence isn't attested, and a team learns its own flag only from its captain, not from a referee-sealed copy (that arrives with the phone client).
+What the prototype cuts, and must not ship with: the roster is a fixed list rather than an eligibility rule, and the panel is drawn by the open request's id rather than the city's last seed. A referee that withholds its seed reveal stalls the round, and one that goes silent isn't replaced. Levels come from the awards each referee has itself seen, so referees on different past games could price a capture differently. Evidence isn't attested, and a team learns its own flag only from its captain, not from a referee-sealed copy (that arrives with the phone client).
 
-Next: quorum ordering and the seed ceremony across 5 referees, key attestation, the media store, the matcher, replacement and pause, and a phone client speaking this protocol instead of `InMemoryBackend`.
+Next: key attestation, the media store, the matcher, eligibility and replacement, levels frozen at round open from quorum outcomes, and a phone client speaking this protocol instead of `InMemoryBackend`.

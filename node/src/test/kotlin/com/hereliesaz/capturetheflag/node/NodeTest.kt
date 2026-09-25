@@ -30,6 +30,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
+private const val PANEL_TURNS = 6
+
 class NodeTest {
     @Test fun eventsSignAndVerify() {
         val k = Keys.generate()
@@ -80,10 +82,12 @@ class NodeTest {
         }
     }
 
-    /** A player's action: plaintext when opening a city, sealed to [referee] inside a game. */
-    private fun action(k: Keys, a: Action, game: String? = null, city: String? = null, referee: String? = null): Event {
+    /** A player's action: plaintext when opening a city, sealed to the [panel] inside a game. */
+    private fun action(k: Keys, a: Action, game: String? = null, city: String? = null, panel: List<String>? = null, at: Long? = null): Event {
         val body = Nostr.json.encodeToString(Action.serializer(), a)
-        return k.sign(Kinds.ACTION, referee?.let { Nip44.seal(body, k, it) } ?: body, listOfNotNull(game?.let { listOf("g", it) }, city?.let { listOf("c", it) }))
+        val tags = listOfNotNull(game?.let { listOf("g", it) }, city?.let { listOf("c", it) })
+        val content = panel?.let { Sealed.forPanel(body, k, it) } ?: body
+        return if (at != null) k.sign(Kinds.ACTION, content, tags, at) else k.sign(Kinds.ACTION, content, tags)
     }
 
     @Test fun refereeRunsARoundFromSignedActionsAndTheLogRebuildsIt() = runTest {
@@ -93,14 +97,14 @@ class NodeTest {
         val referee = Referee(node, store, DemoCityDirectory) { now }
         val players = (1..4).map { Keys.generate() }
 
-        referee.accept(action(players[0], Action.Open("New Orleans"), city = "new orleans"))
+        action(players[0], Action.Open("New Orleans"), city = "new orleans", at = now / 1000).let { store.add(it); referee.accept(it) }
         val game = referee.games.keys.single()
         val opened = store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN, Kinds.SEED_REVEAL))))
         assertEquals(2, opened.size)
         assertTrue(opened.all { it.pubkey == node.pub })
 
         players.forEachIndexed { i, p ->
-            val e = action(p, Action.Join("P$i", "selfie$i"), game, referee = node.pub)
+            val e = action(p, Action.Join("P$i", "selfie$i"), game, panel = listOf(node.pub))
             store.add(e); referee.accept(e)
         }
         // An action with a bad signature never reaches the store, so never reaches a batch.
@@ -136,12 +140,12 @@ class NodeTest {
         val node = Keys.generate()
         val referee = Referee(node, store, DemoCityDirectory) { now }
         val players = (1..4).map { Keys.generate() }
-        referee.accept(action(players[0], Action.Open("New Orleans"), city = "new orleans"))
+        action(players[0], Action.Open("New Orleans"), city = "new orleans", at = now / 1000).let { store.add(it); referee.accept(it) }
         val game = referee.games.keys.single()
         suspend fun send(e: Event) { store.add(e); referee.accept(e) }
-        players.forEachIndexed { i, p -> send(action(p, Action.Join("P$i", "s$i"), game, referee = node.pub)) }
+        players.forEachIndexed { i, p -> send(action(p, Action.Join("P$i", "s$i"), game, panel = listOf(node.pub))) }
         val k = ByteArray(32) { 7 }.toHex()
-        send(players[0].sign(Kinds.BLE_KEY, Nip44.seal(k, players[0], node.pub), listOf(listOf("g", game))))
+        send(players[0].sign(Kinds.BLE_KEY, Sealed.forPanel(k, players[0], listOf(node.pub)), listOf(listOf("g", game))))
         referee.flush()
 
         assertTrue(store.query(listOf(Filter())).none { k in it.content }, "the key never appears in the clear")
@@ -156,6 +160,82 @@ class NodeTest {
         val revealed = Nostr.json.decodeFromString(Reveal.serializer(), store.query(listOf(Filter(kinds = setOf(Kinds.REVEAL)))).single().content).secrets.single()
         assertEquals(k, revealed.preimage)
         assertEquals(commit.commitment, revealed.commitment, "the reveal matches what was committed")
+    }
+
+    /** Five referees on one network. Referees in [down] neither hear nor speak. */
+    private class Network(n: Int, var now: Long = 1_000_000L) {
+        val store = EventStore()
+        val keys = List(n) { Keys.generate() }
+        val referees = keys.map { Referee(it, store, DemoCityDirectory, keys.map(Keys::pub)) { now } }
+        val down = mutableSetOf<Int>()
+
+        suspend fun send(e: Event) { store.add(e); pump() }
+
+        /** Delivers the whole log to every live referee (they ignore repeats) until it stops growing. */
+        suspend fun pump() {
+            var size = -1
+            while (store.size() != size) {
+                size = store.size()
+                val all = store.query(listOf(Filter())).sortedWith(compareBy({ it.created_at }, { it.id }))
+                all.forEach { e -> referees.forEachIndexed { i, r -> if (i !in down) r.accept(e) } }
+            }
+        }
+
+        suspend fun flush() { referees.forEachIndexed { i, r -> if (i !in down) r.flush() }; pump() }
+        fun live() = referees.filterIndexed { i, _ -> i !in down }
+    }
+
+    @Test fun fiveRefereesAgreeAndThreeAreEnough() = runTest {
+        val net = Network(5)
+        val players = (1..4).map { Keys.generate() }
+        net.send(action(players[0], Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.referees[0].games.keys.single()
+        val panel = net.referees[0].panelOf(game)!!
+        assertEquals(net.keys.map { it.pub }.toSet(), panel.toSet())
+        // Five commitments, then five reveals: every referee reaches the same seed.
+        assertEquals(5, net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).size)
+        assertEquals(5, net.store.query(listOf(Filter(kinds = setOf(Kinds.SEED_REVEAL)))).size)
+
+        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", "s$i"), game, panel = panel)) }
+        net.flush()
+        net.referees.forEach { assertEquals(4, it.games.getValue(game).signups.size) }
+        assertEquals(5, net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).size, "every referee signs the outcome")
+        assertEquals(1, net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).map { it.content }.distinct().size, "and they all say the same")
+
+        // Two referees go dark, including whoever leads next. The other three carry on.
+        net.down += listOf(0, 1)
+        net.now += GameRules.SIGNUP_WINDOW
+        repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
+        val teams = net.live().map { r -> r.games.getValue(game).let { g -> g.phase::class to g.players.mapValues { it.value.team to it.value.role } } }
+        assertIs<GamePhase.FlagPlacement>(net.referees[2].games.getValue(game).phase)
+        assertEquals(1, teams.distinct().size, "the three agree on teams and captains")
+
+        // A third goes dark: no majority, no batch, no change.
+        net.down += 2
+        val before = net.referees[3].games.getValue(game)
+        val late = action(players[1], Action.CoCaptains(emptySet()), game, panel = panel)
+        net.send(late)
+        repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
+        assertEquals(before, net.referees[3].games.getValue(game))
+        assertTrue(net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).none { late.id in it.content })
+
+        // One comes back: it catches up from the log and play resumes.
+        net.down -= 2
+        net.pump()
+        repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
+        assertTrue(net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).any { late.id in it.content })
+        assertTrue(net.live().all { it.equivocators.isEmpty() })
+    }
+
+    @Test fun aRefereeWhoSignsTwoBatchesIsCaught() = runTest {
+        val net = Network(5)
+        val p = Keys.generate()
+        net.send(action(p, Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.referees[0].games.keys.single()
+        val liar = net.keys[4]
+        net.send(liar.sign(Kinds.BATCH, Nostr.json.encodeToString(Batch.serializer(), Batch(1, net.now, emptyList())), listOf(listOf("g", game))))
+        net.send(liar.sign(Kinds.BATCH, Nostr.json.encodeToString(Batch.serializer(), Batch(1, net.now + 1, emptyList())), listOf(listOf("g", game))))
+        assertTrue(net.referees.take(4).all { liar.pub in it.equivocators })
     }
 
     @Test fun nip44MatchesTheOfficialVectors() {
