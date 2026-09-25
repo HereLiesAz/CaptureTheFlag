@@ -3,6 +3,8 @@ package com.hereliesaz.capturetheflag.data
 import com.hereliesaz.capturetheflag.chat.Channel
 import com.hereliesaz.capturetheflag.chat.ChatAccess
 import com.hereliesaz.capturetheflag.chat.ChatMessage
+import com.hereliesaz.capturetheflag.commentary.Commentary
+import com.hereliesaz.capturetheflag.commentary.Commentator
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.engine.Transition
 import com.hereliesaz.capturetheflag.geo.GeoPoint
@@ -80,8 +82,28 @@ class InMemoryBackend(
         _ledger.update { it + ticked.awards + result.awards }
         (ticked.notices + result.notices).forEach { announce(flow.value?.city ?: g.city, it) }
         flow.value = result.game
+        broadcast(city, g, result.game, ticked.awards + result.awards, ticked.notices + result.notices)
         return result.verdict
     }
+
+    private val booth = Commentator(random)
+    private val feeds = mutableMapOf<String, MutableStateFlow<List<Commentary>>>()
+    private val lastLook = mutableMapOf<String, Millis>()
+
+    private fun feed(city: String) = feeds.getOrPut(city.lowercase()) { MutableStateFlow(emptyList()) }
+
+    /** Narrates the change, or fills a long silence with colour commentary. */
+    private fun broadcast(city: String, before: Game?, after: Game, awards: List<Award>, notices: List<String>) {
+        val now = clock()
+        val key = city.lowercase()
+        var lines = booth.narrate(before, after, awards, notices, now, lastLook[key])
+        lastLook[key] = now
+        val last = feed(city).value.lastOrNull()?.at ?: 0L
+        if (lines.isEmpty() && now - last >= LULL) lines = listOfNotNull(booth.lull(after, now))
+        if (lines.isNotEmpty()) feed(city).update { (it + lines).takeLast(FEED_LENGTH) }
+    }
+
+    override fun commentary(cityName: String): StateFlow<List<Commentary>> = feed(cityName).asStateFlow()
 
     override suspend fun register(displayName: String, selfieUri: String): User =
         User("u-${random.nextLong().toULong().toString(36)}", displayName, selfieUri)
@@ -93,12 +115,13 @@ class InMemoryBackend(
             val ticked = engine.tick(current, clock())
             _ledger.update { it + ticked.awards }
             val t = ticked.game
+            broadcast(cityName, current, t, ticked.awards, ticked.notices)
             if (t.phase !is GamePhase.Ended) return t.also { flow.value = it }
         }
         val (city, cells) = directory.resolve(cityName) ?: error("Unknown city: $cityName")
         val line = partitioner.partition(cells, random).line
         return engine.newRound("g-${random.nextLong().toULong().toString(36)}", city, Territory(city, line, cells), clock())
-            .also { flow.value = it }
+            .also { broadcast(cityName, flow.value, it, emptyList(), emptyList()); flow.value = it }
     }
 
     override fun game(cityName: String): StateFlow<Game?> = slot(cityName).asStateFlow()
@@ -181,6 +204,12 @@ class InMemoryBackend(
         val msg = ChatMessage("m-${random.nextLong().toULong().toString(36)}", channel.key, me.id, me.displayName, body.trim(), clock())
         threads.getOrPut(channel.key) { MutableStateFlow(emptyList()) }.update { it + msg }
         return Verdict.Valid
+    }
+
+    private companion object {
+        /** Colour commentary after this long without a line. */
+        const val LULL = GameRules.HOUR
+        const val FEED_LENGTH = 200
     }
 }
 

@@ -25,6 +25,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -37,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hereliesaz.capturetheflag.chat.Channel
+import com.hereliesaz.capturetheflag.commentary.Commentary
 import com.hereliesaz.capturetheflag.data.GameBackend
 import com.hereliesaz.capturetheflag.data.PlatformServices
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
@@ -114,7 +116,7 @@ private fun CityScreen(backend: GameBackend, onPicked: (String) -> Unit) {
     }
 }
 
-private enum class Tab(val label: String) { STATUS("Status"), ROSTER("Roster"), ACT("Act"), RANKS("Ranks"), CHAT("Chat") }
+private enum class Tab(val label: String) { STATUS("Status"), ROSTER("Roster"), ACT("Act"), RADIO("Radio"), RANKS("Ranks"), CHAT("Chat") }
 
 @Composable
 private fun GameScreen(
@@ -132,6 +134,9 @@ private fun GameScreen(
     val pings = remember { mutableStateListOf<Ping>() }
 
     LaunchedEffect(Unit) { while (true) { now = clock(); delay(1_000) } }
+    val radio by backend.commentary(city).collectAsState()
+    LaunchedEffect(radio.lastOrNull()) { platform.showLiveFeed(radio.takeLast(5).reversed().map { it.text }) }
+    DisposableEffect(city) { onDispose { platform.showLiveFeed(emptyList()) } }
     LaunchedEffect(city) { backend.pings(city).collect { pings.add(0, it) } }
 
     val g = game ?: return Text("Loading…", Modifier.padding(24.dp))
@@ -153,11 +158,13 @@ private fun GameScreen(
 
     Column(Modifier.fillMaxSize()) {
         RulesPanel(Briefing.forPlayer(g, me?.id, now, fix?.let { g.territory.ownerOf(it.point) }))
+        radio.lastOrNull()?.let { Ticker(it.text) { tab = Tab.RADIO } }
         Column(Modifier.weight(1f).padding(16.dp)) {
             when (tab) {
                 Tab.STATUS -> StatusTab(backend, g, mine, now, fix?.let { g.territory.ownerOf(it.point) }, pings, city, onLeave)
                 Tab.ROSTER -> RosterTab(platform, g, mine)
                 Tab.ACT -> ActTab(backend, platform, g, mine, city, pings, now)
+                Tab.RADIO -> RadioTab(radio)
                 Tab.RANKS -> RanksTab(backend, g)
                 Tab.CHAT -> ChatTab(backend, g, mine, city)
             }
@@ -551,5 +558,26 @@ private fun RulesPanel(rules: List<String>) {
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         rules.forEach { Text("— $it", style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+/** The newest line of the broadcast, one row, tap for the full feed. */
+@Composable
+private fun Ticker(text: String, onOpen: () -> Unit) {
+    Text(
+        "ON AIR  $text",
+        Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 6.dp),
+        style = MaterialTheme.typography.labelMedium,
+        maxLines = 1,
+        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+    )
+}
+
+/** The whole broadcast, newest first. */
+@Composable
+private fun RadioTab(lines: List<Commentary>) {
+    if (lines.isEmpty()) return Text("Dead air. Something will happen. It always does.")
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        items(lines.reversed()) { c -> Text(c.text) }
     }
 }

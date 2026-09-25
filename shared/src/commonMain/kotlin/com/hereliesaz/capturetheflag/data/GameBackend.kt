@@ -2,6 +2,7 @@ package com.hereliesaz.capturetheflag.data
 
 import com.hereliesaz.capturetheflag.chat.Channel
 import com.hereliesaz.capturetheflag.chat.ChatMessage
+import com.hereliesaz.capturetheflag.commentary.Commentary
 import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.model.Award
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
@@ -74,6 +75,9 @@ interface GameBackend {
 
     /** Display name for any registered user, for leaderboards. */
     fun displayName(user: PlayerId): String
+
+    /** The public play-by-play for [cityName], oldest first. */
+    fun commentary(cityName: String): StateFlow<List<Commentary>>
 
     fun messages(channel: Channel): StateFlow<List<ChatMessage>>
     suspend fun send(channel: Channel, body: String): Verdict

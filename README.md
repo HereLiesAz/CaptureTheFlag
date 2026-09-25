@@ -23,6 +23,14 @@ Every photo is also checked for freshness (2 min), and its EXIF location against
 
 A rules panel sits above every tab and shows only what applies to the player right now (`rules/Briefing.kt`): sign-up, leader or follower during placement, home ground, enemy ground (with the next ping and when identity is revealed), breaking out, en route to jail, frozen, disqualified, or spectating. Everything else stays hidden.
 
+## Radio
+
+A live play-by-play in a radio sportscaster's voice (`commentary/Commentator.kt`), in the Radio tab, as a one-line ticker above every tab, and as an ongoing notification (shared with the location service's, so there is only ever one).
+
+It narrates as it happens: crossings, intruders still over the line, the moment the pings give someone away, breakout attempts starting and failing, check-ins, tags, jailbreaks, captures, the clock at 24 h and 1 h, and colour commentary after an hour of quiet.
+
+It is public, so it never gives anything away too specifically. Live play is told by team, never by name or place: no coordinates, no flag, no which-jail, time over the line only roughly. Names come out only once something is finished and already on the roster.
+
 ## Jail
 
 Jail is conceptual, but the report is not.
