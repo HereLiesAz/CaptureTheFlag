@@ -174,6 +174,12 @@ enum class PingKind {
     TRIPWIRE,
     /** Interrogate: forced on-demand ping. */
     INTERROGATION,
+    /**
+     * To the player alone: they're within [com.hereliesaz.capturetheflag.rules.GameRules.FLAG_ZONE_M]
+     * of the enemy flag and should go live, or a capture won't count. [Ping.location] is their own
+     * position, never the flag's.
+     */
+    GO_LIVE,
 }
 
 /**
@@ -234,6 +240,10 @@ data class Game(
     val pingedAbout: Map<PlayerId, Set<PlayerId>> = emptyMap(),
     /** Capture and jailbreak streams this round, by stream id: live, awaiting disputes, or done. */
     val streams: Map<String, LiveStream> = emptyMap(),
+    /** Player → when they came within [com.hereliesaz.capturetheflag.rules.GameRules.FLAG_ZONE_M] of the enemy flag, this approach. */
+    val flagZone: Map<PlayerId, Millis> = emptyMap(),
+    /** Players who switched location off on enemy ground: their next fix at home jails them. */
+    val dark: Set<PlayerId> = emptySet(),
     /** Teams that have used their one appeal this round. */
     val appealsUsed: Set<Team> = emptySet(),
 ) {
@@ -244,11 +254,11 @@ data class Game(
 enum class StreamPurpose { CAPTURE, JAILBREAK }
 
 /**
- * A capture or jailbreak, streamed live to the city. The phone sends a frame every few
+ * A capture or jailbreak, streamed live to everybody. The phone sends a frame every few
  * seconds: its fix and the hash of the video written since the last frame, so the video can't
- * be swapped afterward. The streamer says the [challenge] at the start. [endedAt]
- * is the winning frame, where the referees' footage ends (the stream itself may go on as a
- * victory lap). Defenders then have until [contestUntil] to dispute; undisputed, it counts.
+ * be swapped afterward. The [challenge] is shown from the start and said with the winning
+ * frame ([qualifiedAt]); the referees' footage ends 30 s later ([endedAt]), and the stream may
+ * go on as a victory lap. Defenders then have until [contestUntil] to dispute; undisputed, it counts.
  */
 data class LiveStream(
     val id: String,
@@ -261,6 +271,10 @@ data class LiveStream(
     /** Two words said at the start of the stream, drawn from the batch it went live in: nobody knew them before. */
     val challenge: String? = null,
     val challengeAt: Millis? = null,
+    /** The winning frame: said with the challenge. The referees' footage ends 30 s later, at [endedAt]. */
+    val qualifiedAt: Millis? = null,
+    /** Flag run: when the player came within 200 m of the flag, as of the winning frame. */
+    val zoneAt: Millis? = null,
     /** Jailbreak: first frame inside the jail radius. */
     val arrivedAt: Millis? = null,
     val endedAt: Millis? = null,

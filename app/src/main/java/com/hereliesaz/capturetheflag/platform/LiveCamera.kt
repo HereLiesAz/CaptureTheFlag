@@ -148,7 +148,7 @@ internal fun LiveCameraView(
         }
         Column(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.55f)).padding(16.dp)) {
             Text(if (lap) "● LIVE: VICTORY LAP" else "● LIVE", color = Color.White, fontWeight = FontWeight.Bold)
-            if (!lap) challenge?.let { Text("Say it on camera: \"$it\"", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+            if (!lap) challenge?.let { Text("Your challenge: \"$it\"", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
             Text(status, color = Color.White)
             error?.let { Text(it, color = Color.White) }
         }

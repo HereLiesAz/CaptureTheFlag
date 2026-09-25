@@ -11,6 +11,9 @@ interface PlatformServices {
     /** Live location. Null until the first fix. */
     val location: StateFlow<LocationFix?>
 
+    /** Whether the device's location is switched on at all (GPS, Wi-Fi, cell and the rest come as one). */
+    val locationOn: StateFlow<Boolean>
+
     /** Takes a photo and returns it with EXIF, live fix and BLE sightings attached. Null if cancelled. */
     suspend fun takePhoto(): PhotoEvidence?
 

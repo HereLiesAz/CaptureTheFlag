@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hereliesaz.capturetheflag.chat.Channel
+import com.hereliesaz.capturetheflag.chat.ChatAccess
 import com.hereliesaz.capturetheflag.commentary.Commentary
 import com.hereliesaz.capturetheflag.data.GameBackend
 import com.hereliesaz.capturetheflag.data.PlatformServices
@@ -198,6 +199,8 @@ private fun GameScreen(
         seen = g
     }
     LaunchedEffect(fix) { fix?.let { if (mine != null) backend.reportLocation(city, it) } }
+    val locationOn by platform.locationOn.collectAsState()
+    LaunchedEffect(locationOn) { if (!locationOn && mine != null) backend.locationOff(city) }
 
     Column(Modifier.fillMaxSize()) {
         RulesPanel(Briefing.forPlayer(g, me?.id, now, fix?.let { g.territory.ownerOf(it.point) }))
@@ -285,6 +288,7 @@ private fun StatusTab(
                     PingKind.TRACKING -> "trail"
                     PingKind.TRIPWIRE -> "TRIPWIRE"
                     PingKind.INTERROGATION -> "interrogated"
+                    PingKind.GO_LIVE -> "go live"
                 }
                 val who = p.identified?.displayName ?: "unknown intruder"
                 val lvl = if (myPerks?.keenEye == true && p.subjectLevel != null) " · lv ${p.subjectLevel}" else ""
@@ -321,47 +325,31 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
     fun report(v: Verdict) { result = when (v) { Verdict.Valid -> "Confirmed."; is Verdict.Rejected -> v.reason } }
 
     if (mine == null) return Text("Not playing this round.")
-    // One camera session: aiming at the flag, live, then the victory lap until the player ends it,
-    // whatever happens to the game meanwhile.
-    var camera by remember { mutableStateOf<StreamPurpose?>(null) }
+    // One camera session: live, then the victory lap until the player ends it, whatever happens
+    // to the game meanwhile.
     var session by remember { mutableStateOf<String?>(null) }
-    var confirming by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         val live = g.streams.values.firstOrNull { it.by == mine.id && it.open }
-        if (live != null && session != live.id) { session = live.id; confirming = false }
+        if (live != null && session != live.id) session = live.id
         val done = session?.let { g.streams[it] }?.takeIf { !it.open }
-        if (camera != null || live != null) {
+        if (live != null || done != null) {
             val status = when {
                 done?.void != null -> "Stream void: ${done.void}. Keep streaming if you like; it no longer counts."
                 done != null -> "Your footage for the referees is in. The rest is yours: stream as long as you like."
-                live == null && confirming -> "Hold it on the flag. Checking the frame..."
-                live == null -> "Frame the enemy flag from where their leader stood, hold still, and take the qualifying frame."
-                live.purpose == StreamPurpose.CAPTURE -> "It qualifies. Say the challenge now: ${countdown(live.challengeAt!! + GameRules.STREAM_CHALLENGE_WINDOW - now)} left."
-                live.arrivedAt == null -> "Say the challenge, then walk into the enemy jail. Leave once you're there and it's over."
-                else -> "Hold the jail on camera: ${countdown(live.arrivedAt + GameRules.JAILBREAK_HOLD - now)} to go, then take the winning frame."
+                live!!.qualifiedAt != null -> "Winning frame in. Say the challenge now: ${countdown(live.qualifiedAt + GameRules.STREAM_CHALLENGE_WINDOW - now)} left."
+                live.purpose == StreamPurpose.CAPTURE -> "Everybody's watching. Find their flag, frame it from where their leader stood, and take the winning frame, saying your challenge."
+                live.arrivedAt == null -> "Walk into the enemy jail. Leave once you're there and it's over."
+                else -> "Hold the jail on camera: ${countdown(live.arrivedAt + GameRules.JAILBREAK_HOLD - now)} to go, then take the winning frame, saying your challenge."
             }
             platform.LiveCamera(
                 challenge = live?.challenge,
                 status = status,
                 lap = done != null,
-                finishLabel = when {
-                    live == null && done == null && !confirming -> "Qualifying frame"
-                    live?.purpose == StreamPurpose.JAILBREAK -> "Winning frame"
-                    else -> null
-                },
+                finishLabel = if (live != null && live.qualifiedAt == null) "Winning frame" else null,
                 onFrame = { fix, chunk -> live?.let { backend.streamFrame(city, it.id, fix, chunk).let { v -> if (v is Verdict.Rejected) report(v) } } },
                 onFinish = { photo ->
-                    when {
-                        photo == null -> { camera = null; session = null; confirming = false }
-                        live == null -> {
-                            confirming = true
-                            scope.launch {
-                                val fix = photo.deviceFix ?: return@launch report(Verdict.Rejected("No location on the frame"))
-                                backend.goLive(city, StreamPurpose.CAPTURE, fix, photo).also { if (it is Verdict.Rejected) confirming = false }.let(::report)
-                            }
-                        }
-                        else -> scope.launch { report(backend.endStream(city, live.id, photo)) }
-                    }
+                    if (photo == null) session = null
+                    else live?.let { scope.launch { report(backend.endStream(city, it.id, photo)) } }
                 },
                 modifier = Modifier.fillMaxWidth().height(520.dp),
             )
@@ -393,12 +381,11 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 StreamBoard(g, mine, now) { id, reason -> scope.launch { report(backend.dispute(city, id, reason)) } }
                 g.jails[mine.team.opponent]?.let { Text("Enemy jail: ${it.venueName}, ${it.address}") }
                 val held = g.team(mine.team).count { it.isJailed && !it.disqualified }
-                if (held > 0) Button(onClick = {
-                    scope.launch {
-                        val here = platform.location.value ?: return@launch report(Verdict.Rejected("No location yet"))
-                        backend.goLive(city, StreamPurpose.JAILBREAK, here).also { if (it == Verdict.Valid) camera = StreamPurpose.JAILBREAK }.let(::report)
-                    }
-                }) {
+                fun goLive(purpose: StreamPurpose) = scope.launch {
+                    val here = platform.location.value ?: return@launch report(Verdict.Rejected("No location yet"))
+                    report(backend.goLive(city, purpose, here))
+                }
+                if (held > 0) Button(onClick = { goLive(StreamPurpose.JAILBREAK) }) {
                     Text("Go live: jailbreak ($held held). Start ${GameRules.STREAM_APPROACH_M.toInt()} m out, hold ${GameRules.JAILBREAK_HOLD / GameRules.MINUTE} min on camera")
                 }
                 val decoysLeft = Progression.perksFor(mine.level).decoysPerGame - (g.decoysUsed[mine.id] ?: 0)
@@ -433,8 +420,9 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 GameEngine.flagSense(g, mine.id)?.let { (c, r) ->
                     Text("Flag Sense: enemy flag within ${r.toInt()} m of %.5f, %.5f".fmt(c.lat, c.lng))
                 }
-                Button(enabled = !mine.isJailed, onClick = { camera = StreamPurpose.CAPTURE }) {
-                    Text("Found their flag? Go live on it")
+                val zone = mine.id in g.flagZone
+                Button(enabled = !mine.isJailed, onClick = { goLive(StreamPurpose.CAPTURE) }) {
+                    Text(if (zone) "Their flag is within ${GameRules.FLAG_ZONE_M.toInt()} m. Go live now" else "Go live: hunt for their flag")
                 }
                 Text("Tag an intruder — pick who you photographed:")
                 LazyColumn {
@@ -534,6 +522,8 @@ private fun ChatTab(backend: GameBackend, g: Game, mine: Player?, city: String) 
     val messages by backend.messages(channel).collectAsState()
     var draft by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    val cutOff = mine != null && ChatAccess.blackedOut(mine.id, g)
+    val readable = mine == null || ChatAccess.canRead(mine.id, channel, g)
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -541,8 +531,13 @@ private fun ChatTab(backend: GameBackend, g: Game, mine: Player?, city: String) 
                 FilterChip(selected = i == selected, onClick = { selected = i }, label = { Text(label) })
             }
         }
+        if (cutOff) Text(
+            if (mine?.isJailed == true) "Jailed: cut off from your team. Nothing gets out until you're free."
+            else "On enemy ground: cut off from your team. Nothing gets out until you're home, or you say it on a live stream.",
+            fontWeight = FontWeight.Bold,
+        )
         LazyColumn(Modifier.weight(1f), reverseLayout = true) {
-            items(messages.reversed()) { m ->
+            items(if (readable) messages.reversed() else emptyList()) { m ->
                 Column(Modifier.padding(vertical = 4.dp)) {
                     Text(m.fromName, style = MaterialTheme.typography.labelSmall)
                     Text(m.body)
@@ -551,9 +546,9 @@ private fun ChatTab(backend: GameBackend, g: Game, mine: Player?, city: String) 
         }
         error?.let { Text(it) }
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            OutlinedTextField(draft, { draft = it }, Modifier.weight(1f), placeholder = { Text("Say something you'll regret") })
+            OutlinedTextField(draft, { draft = it }, Modifier.weight(1f), enabled = !cutOff, placeholder = { Text("Say something you'll regret") })
             Spacer(Modifier.size(8.dp))
-            Button(onClick = {
+            Button(enabled = !cutOff, onClick = {
                 scope.launch {
                     val v = backend.send(channel, draft)
                     error = (v as? Verdict.Rejected)?.reason

@@ -62,30 +62,29 @@ object Briefing {
             add("Until released you earn nothing and cannot tag, capture or break anyone out.")
         }
         me.isJailed -> buildList {
-            add("You are frozen: no points, no tagging, no capture, no jailbreak.")
+            add("You are frozen: no points, no tagging, no capture, no jailbreak, and cut off from your team.")
             add("You are free when a teammate streams a ${GameRules.JAILBREAK_HOLD / MIN}-minute hold of the enemy jail, or when the round ends.")
             Progression.perksFor(me.level).paroleMs?.let { add("Parole frees you ${it / GameRules.HOUR} h after you were jailed.") }
         }
         game.streams.values.any { it.by == me.id && it.open } -> buildList {
             val s = game.streams.values.first { it.by == me.id && it.open }
-            add("You are live. Keep the camera running: a gap over ${GameRules.STREAM_MAX_GAP / 1000} seconds voids the stream.")
-            s.challenge?.let { add("Say your challenge on camera within ${GameRules.STREAM_CHALLENGE_WINDOW / 1000} seconds: \"$it\".") }
-            if (s.purpose == StreamPurpose.CAPTURE) {
-                add("Your frame of the flag qualified. Keep it rolling while you say the challenge; the footage for the referees ends ${GameRules.STREAM_CHALLENGE_WINDOW / 1000} seconds in.")
-            } else {
-                add("Stay within ${GameRules.JAIL_REPORT_RADIUS_M.toInt()} m of the jail for ${GameRules.JAILBREAK_HOLD / MIN} minutes on camera, then take the winning frame. Leave and it is over.")
-            }
-            add("After that, keep streaming as long as you like. The referees' footage stops; the rest is yours.")
-            add("You can be tagged while you stream. Jailed mid-stream, it's void.")
+            add("You are live, and everybody is watching: both teams and the city. A gap over ${GameRules.STREAM_MAX_GAP / 1000} seconds voids the stream.")
+            if (s.purpose == StreamPurpose.CAPTURE) add("Find their flag and frame it from where their leader stood. That's the winning frame.")
+            else add("Stay within ${GameRules.JAIL_REPORT_RADIUS_M.toInt()} m of the jail for ${GameRules.JAILBREAK_HOLD / MIN} minutes on camera, then take the winning frame. Leave and it is over.")
+            s.challenge?.let { add("Say your challenge with the winning frame: \"$it\". The referees' footage runs ${GameRules.STREAM_CHALLENGE_WINDOW / 1000} seconds past it.") }
+            add("After that, keep streaming as long as you like. The rest is yours.")
+            add("Get caught and the stream ends on the spot.")
         }
         game.streams.values.any { it.by == me.id && it.pending } -> listOf(
             "Your stream is in. The defenders have ${GameRules.STREAM_CONTEST_WINDOW / MIN} minutes to dispute it; undisputed, it counts.",
-            "A dispute goes to the referees' automated checks: GPS, timing and sensors all the way through, the challenge heard at the start, and the target matched against the leader's registration photo.",
+            "A dispute goes to the referees' automated checks: GPS, timing and sensors all the way through, the challenge heard with the winning frame, and the target matched against the leader's registration photo.",
         )
         standingIn == me.team.opponent -> buildList {
             val inc = game.incursions[me.id]
             val perks = Progression.perksFor(me.level)
             add("You are on enemy ground. They are told where you are, more often the longer you stay.")
+            add("You're cut off from your team: no chat in or out. What you learn here gets out when you make it home, or when you say it on a live stream everybody hears.")
+            add("Switching location off won't get you home. Turn up on your side after going dark and you're jailed where you were last seen.")
             if (inc != null) {
                 val next = PingSchedule.dueAt(inc.enteredAt, inc.pingsSent + 1, perks)
                 add("Next ping in ${((next - now).coerceAtLeast(0) + MIN - 1) / MIN} min.")
@@ -94,7 +93,8 @@ object Briefing {
                 else add("They know who you are.")
             }
             add("Anyone on this side can jail you with a photo while your phones are close.")
-            add("Find their flag and go live on it to win: the stream starts on a frame of the flag, then you say a challenge. Stream a ${GameRules.JAILBREAK_HOLD / MIN}-minute hold of their jail, from ${GameRules.STREAM_APPROACH_M.toInt()} m out, to free teammates.")
+            if (me.id in game.flagZone) add("Their flag is within ${GameRules.FLAG_ZONE_M.toInt()} m. Go live now, or a capture won't count.")
+            add("To win, be live before you come within ${GameRules.FLAG_ZONE_M.toInt()} m of their flag (you'll be asked), find it, and take the winning frame. Stream a ${GameRules.JAILBREAK_HOLD / MIN}-minute hold of their jail, from ${GameRules.STREAM_APPROACH_M.toInt()} m out, to free teammates.")
             add("Get home unjailed to score for every ping you endured.")
         }
         else -> buildList {

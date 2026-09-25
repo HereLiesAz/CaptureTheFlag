@@ -272,11 +272,16 @@ class NodeTest {
         }
         assertIs<GamePhase.Active>(g().phase)
 
-        // A flag run: live on a qualifying frame of the flag, the challenge, then a frame every 5 s until the footage closes.
+        // A flag run: live 60 m out, walk in, the winning frame with the challenge, frames until the footage closes.
         val runner = g().players.values.first { !it.isLeader }
         val target = g().flags.getValue(runner.team.opponent).location
-        act(keyOf.getValue(runner.id), Action.GoLive("s1", StreamPurpose.CAPTURE, Position(target.lat, target.lng, net.now, 5.0), shot(target, net.now)))
+        val start = GeoPoint(target.lat + 60 / 111_320.0, target.lng)
+        act(keyOf.getValue(runner.id), Action.GoLive("s1", StreamPurpose.CAPTURE, Position(start.lat, start.lng, net.now, 5.0)))
         assertNotNull(g().streams.getValue("s1").challenge)
+        net.now += 5_000
+        act(keyOf.getValue(runner.id), Action.Frame("s1", Position(target.lat, target.lng, net.now, 5.0), "chunk-${net.now}"))
+        act(keyOf.getValue(runner.id), Action.EndStream("s1", shot(target, net.now)))
+        assertNotNull(g().streams.getValue("s1").qualifiedAt)
         while (g().streams.getValue("s1").open) {
             net.now += 5_000
             act(keyOf.getValue(runner.id), Action.Frame("s1", Position(target.lat, target.lng, net.now, 5.0), "chunk-${net.now}"))

@@ -21,7 +21,7 @@ import com.hereliesaz.capturetheflag.node.ReviewReport.Result
  */
 class StreamJudge(private val referee: String, private val matcher: PhotoMatcher? = null) {
     suspend fun review(g: Game, s: LiveStream): ReviewReport {
-        val checks = listOf(continuity(s), challengeTiming(s), finalStill(g, s), visualMatch(g, s), heard(), integrity())
+        val checks = listOf(continuity(s), liveInTime(s), challengeTiming(s), finalStill(g, s), visualMatch(g, s), heard(), integrity())
         return ReviewReport(s.id, s.review, referee, checks.none { it.result == Result.FAIL }, checks)
     }
 
@@ -33,28 +33,37 @@ class StreamJudge(private val referee: String, private val matcher: PhotoMatcher
         return Check("Unbroken stream", if (ok) Result.PASS else Result.FAIL, "${s.chunks.size} frames over ${span / 1000} s; at least $needed needed")
     }
 
+    /** Said with the winning frame: the footage must run the full window past it. */
     private fun challengeTiming(s: LiveStream): Check {
-        val at = s.challengeAt ?: return Check("Challenge on camera", Result.FAIL, "No challenge was issued before the stream ended")
+        val at = s.qualifiedAt ?: return Check("Challenge on camera", Result.FAIL, "No winning frame was taken")
         val after = (s.endedAt ?: s.lastFrame.at) - at
         val ok = after >= GameRules.STREAM_CHALLENGE_WINDOW
-        return Check("Challenge on camera", if (ok) Result.PASS else Result.FAIL, "\"${s.challenge}\" shown at the start, ${after / 1000} s before the footage ended; ${GameRules.STREAM_CHALLENGE_WINDOW / 1000} s needed to say it")
+        return Check("Challenge on camera", if (ok) Result.PASS else Result.FAIL, "\"${s.challenge}\" to be said with the winning frame; ${after / 1000} s of footage after it, ${GameRules.STREAM_CHALLENGE_WINDOW / 1000} s needed")
+    }
+
+    /** A flag run counts only from a stream live since the player came within range of the flag. */
+    private fun liveInTime(s: LiveStream): Check {
+        if (s.purpose != StreamPurpose.CAPTURE) return Check("Live before the approach", Result.PASS, "A jailbreak starts ${GameRules.STREAM_APPROACH_M.toInt()} m out")
+        val zone = s.zoneAt ?: return Check("Live before the approach", Result.PASS, "Live before coming within ${GameRules.FLAG_ZONE_M.toInt()} m")
+        val late = s.startedAt - zone
+        val ok = late <= GameRules.STREAM_ZONE_GRACE
+        return Check("Live before the approach", if (ok) Result.PASS else Result.FAIL,
+            if (late <= 0) "Live ${-late / 1000} s before coming within ${GameRules.FLAG_ZONE_M.toInt()} m" else "Went live ${late / 1000} s after coming within ${GameRules.FLAG_ZONE_M.toInt()} m; ${GameRules.STREAM_ZONE_GRACE / 1000} s allowed")
     }
 
     /**
-     * The deciding still, checked again as when it was taken: a flag run's qualifying frame at
-     * the start, a jailbreak's winning frame at the end. Location, time, pose, facing, the
+     * The winning frame, checked again as when it was taken: location, time, pose, facing, the
      * reference photo's geometry.
      */
     private fun finalStill(g: Game, s: LiveStream): Check {
         val photo = s.finish ?: return Check("Final still", Result.FAIL, "No still was kept")
-        val at = (if (s.purpose == StreamPurpose.CAPTURE) s.startedAt else s.endedAt)
-            ?: return Check("Final still", Result.FAIL, "The stream never finished")
+        val at = s.qualifiedAt ?: return Check("Final still", Result.FAIL, "No winning frame was taken")
         // Judge the still as of the finish: being jailed since doesn't unmake it.
         val then = g.copy(players = g.players + (s.by to g.players.getValue(s.by).copy(jailedAt = null)))
         val v = when (s.purpose) {
             StreamPurpose.CAPTURE -> Verification.flagCapture(then, s.by, photo, at)
             StreamPurpose.JAILBREAK -> {
-                val held = s.arrivedAt?.let { at - it } ?: 0
+                val held = s.arrivedAt?.let { at - it } ?: 0L
                 if (held < GameRules.JAILBREAK_HOLD) Verdict.Rejected("Held the jail ${held / 60_000} min of ${GameRules.JAILBREAK_HOLD / 60_000}")
                 else Verification.jailbreak(then, s.by, photo, at)
             }

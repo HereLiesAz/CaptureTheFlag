@@ -23,6 +23,7 @@ object Alerts {
             PingKind.TRIPWIRE -> "Tripwire" to "Someone just crossed in near your flag."
             PingKind.TRACKING -> null // live trail updates would buzz every few seconds
             PingKind.INTERROGATION -> "Interrogation" to "$who, right now$blur."
+            PingKind.GO_LIVE -> "Go live" to "You're within ${GameRules.FLAG_ZONE_M.toInt()} m of their flag. Go live now, or a capture won't count."
         }
     }
 

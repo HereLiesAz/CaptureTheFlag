@@ -25,7 +25,10 @@ object HeuristicTravel : TravelTimeEstimator {
     private const val TRANSIT_M_PER_MS = 18_000.0 / GameRules.HOUR
     private const val TRANSIT_OVERHEAD = 15 * GameRules.MINUTE
 
-    override suspend fun travelMs(from: GeoPoint, to: GeoPoint, departAt: Millis): Long {
+    override suspend fun travelMs(from: GeoPoint, to: GeoPoint, departAt: Millis): Long = estimate(from, to)
+
+    /** The same estimate, without suspending: pure arithmetic, so the engine can use it directly. */
+    fun estimate(from: GeoPoint, to: GeoPoint): Long {
         val d = from.distanceTo(to) * DETOUR
         val walk = (d / WALK_M_PER_MS).roundToLong()
         val transit = (d / TRANSIT_M_PER_MS).roundToLong() + TRANSIT_OVERHEAD

@@ -46,6 +46,7 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
     }
 
     override val location: StateFlow<com.hereliesaz.capturetheflag.model.LocationFix?> = Tracking.location
+    override val locationOn: StateFlow<Boolean> = Tracking.watchEnabled(activity)
 
     /**
      * Opens the in-app camera. A fresh fix is taken first and handed to the camera, which

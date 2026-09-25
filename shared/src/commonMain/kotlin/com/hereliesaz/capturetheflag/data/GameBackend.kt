@@ -51,16 +51,16 @@ interface GameBackend {
     suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence): Verdict
 
     /**
-     * Goes live. A flag run starts on its qualifying frame, [photo], a still of the flag; a
-     * jailbreak from [fix], at least 50 m from the jail. The stream's id is in the game's
-     * `streams` under this player.
+     * Goes live from [fix]: a flag run any time (the app asks within 1 km of the enemy flag), a
+     * jailbreak at least 50 m from the jail. The stream's id is in the game's `streams` under
+     * this player.
      */
-    suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix, photo: PhotoEvidence? = null): Verdict
+    suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix): Verdict
 
     /** One frame of this player's live stream: fix, and the hash of the video written since the last frame. */
     suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String): Verdict
 
-    /** A jailbreak's winning frame, after the hold. Then the defenders may dispute. */
+    /** The winning frame, said with the challenge. The referees' footage ends 30 s later; then the defenders may dispute. */
     suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence): Verdict
 
     /** A defender disputes a finished stream. */
@@ -68,6 +68,9 @@ interface GameBackend {
     suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence): Verdict
 
     suspend fun reportLocation(cityName: String, fix: LocationFix)
+
+    /** The phone's location was just switched off. On enemy ground, that's an automatic jailing. */
+    suspend fun locationOff(cityName: String)
 
     /** Server-issued BLE token for this device to advertise right now. Rotates. */
     suspend fun currentBleToken(cityName: String): String

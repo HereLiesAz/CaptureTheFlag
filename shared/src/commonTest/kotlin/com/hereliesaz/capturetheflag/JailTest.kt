@@ -170,7 +170,8 @@ class JailTest {
         assertNotNull(s.challenge)
         assertTrue(s.pending)
         assertTrue(ended.game.p(prisoner.id).isJailed, "not until the defenders have had their chance")
-        val done = engine.tick(ended.game, s.endedAt!! + GameRules.STREAM_CONTEST_WINDOW)
+        val at = s.endedAt!! + GameRules.STREAM_CONTEST_WINDOW
+        val done = engine.tick(ended.game, at)
         assertTrue(!done.game.p(prisoner.id).isJailed)
         assertNull(done.game.p(rescuer.id).breakoutSince)
         assertEquals(20L, done.awards.single { it.reason.startsWith("Freed") }.points)
@@ -221,8 +222,8 @@ class JailTest {
         val ble = BleTokenRegistry { tok, _ -> if (tok == "r") rescuer.id else null }
         val tagged = engine.tag(arrived.game, jailer.id, rescuer.id, photo(jail, at, listOf(BleSighting("r", at, -40))), at, ble)
         assertEquals(Verdict.Valid, tagged.verdict)
+        assertEquals("Caught", tagged.game.streams.getValue("s1").void, "the moment the tag lands")
         val after = engine.tick(tagged.game, at + 1)
-        assertEquals("Jailed mid-stream", after.game.streams.getValue("s1").void)
         assertNull(after.game.p(rescuer.id).breakoutSince)
         assertTrue(after.game.p(prisoner.id).isJailed)
     }
@@ -260,7 +261,8 @@ class JailTest {
         val final = engine.rule(appealed.game, "s1", review = 1, upheld = false, now = ruledAt + 2 * MINUTE)
         assertEquals("Failed review", final.game.streams.getValue("s1").void)
         // A review that never reports back doesn't hold the game hostage.
-        val timedOut = engine.tick(disputed.game, end + MINUTE + GameRules.STREAM_RULING_WINDOW)
+        val late = end + MINUTE + GameRules.STREAM_RULING_WINDOW
+        val timedOut = engine.tick(disputed.game, late)
         assertTrue(!timedOut.game.p(prisoner.id).isJailed)
     }
 

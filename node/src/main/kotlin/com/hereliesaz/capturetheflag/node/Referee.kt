@@ -311,11 +311,12 @@ class Referee(
                     }
                 }
                 is Action.PlaceJail -> engine.placeJail(g, who, a.venue, a.address, GeoPoint(a.lat, a.lng), a.photo.toModel(), now)
-                is Action.GoLive -> engine.goLive(g, who, a.stream, a.purpose, a.fix.fix(), now, a.photo?.toModel())
+                is Action.GoLive -> engine.goLive(g, who, a.stream, a.purpose, a.fix.fix(), now)
                 is Action.Frame -> engine.streamFrame(g, who, a.stream, a.fix.fix(), a.chunk, now)
                 is Action.EndStream -> engine.endStream(g, who, a.stream, a.photo.toModel(), now)
                 is Action.Dispute -> engine.dispute(g, who, a.stream, a.reason, now)
                 is Action.Appeal -> engine.appeal(g, who, a.stream, now)
+                is Action.LocationOff -> engine.locationOff(g, who, now)
                 is Action.Tag -> engine.tag(g, who, a.target, a.photo.toModel(), now, ble(r), GameRules.HOUR)
                 is Action.Decoy -> engine.decoy(g, who, GeoPoint(a.lat, a.lng), now)
                 is Action.Vanish -> engine.vanish(g, who, now)

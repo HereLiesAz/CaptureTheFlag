@@ -37,6 +37,12 @@ object GameRules {
     const val BLE_WINDOW = MINUTE
     /** Fixes worse than this are rejected for verification. */
     const val MAX_FIX_ACCURACY_M = 50.0
+    /**
+     * Last seen on enemy ground, next seen at home, with a gap this long between: they went
+     * dark to sneak back, and are jailed where they were last seen. Phones report every 15 s
+     * while tracking; an ordinary signal gap is far shorter than any real crossing.
+     */
+    const val DARK_GAP = 2 * MINUTE
     /** Sensor pose must be sampled this close to the photo's EXIF time. */
     const val POSE_MAX_SKEW = 3_000L
     /** The camera must point within this many degrees of the horizon: held like a camera, not flat or at the sky. */
@@ -73,11 +79,17 @@ object GameRules {
 
     /** A jailbreak stream must start at least this far from the jail, so the walk-in is on camera. */
     const val STREAM_APPROACH_M = 50.0
-    /**
-     * The challenge is shown on going live, to be said on camera within this long. A flag run's
-     * footage ends here; a jailbreak's winning frame can't come sooner.
-     */
+    /** The challenge is said with the winning frame; the referees' footage runs this long past it, then ends. */
     const val STREAM_CHALLENGE_WINDOW = 30_000L
+    /**
+     * Within this of the enemy flag, the app asks the player to go live. Roughly a cell tower's
+     * reach, as a starting point: wide enough to keep them hunting, and whoever hears it is
+     * already cut off from their team (see ChatAccess.blackedOut), so it can only get out on a
+     * live stream everybody hears, or by making it home.
+     */
+    const val FLAG_ZONE_M = 1_000.0
+    /** A capture counts only from a stream live since the player came within [FLAG_ZONE_M], or started within this of it. */
+    const val STREAM_ZONE_GRACE = MINUTE
     /** Frames further apart than this drop the stream. */
     const val STREAM_MAX_GAP = 20_000L
     /** How long defenders have to dispute a finished stream. */

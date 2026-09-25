@@ -31,6 +31,10 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertFalse
+import com.hereliesaz.capturetheflag.model.PingKind
+import com.hereliesaz.capturetheflag.chat.ChatAccess
+import com.hereliesaz.capturetheflag.chat.Channel
 import com.hereliesaz.capturetheflag.rules.GameRules
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -150,8 +154,10 @@ class RulesTest {
         val p = g.players.values.first()
         val enemyGround = if (owner(north) == p.team) south else north
         var tr = engine.reportLocation(g, p.id, LocationFix(enemyGround, start, 5.0))
-        assertEquals(1, tr.pings.size)
-        assertNull(tr.pings.single().identified)
+        // (Standing at their flag, they're also asked to go live: that one's for them alone.)
+        val incursion = tr.pings.filter { it.kind == PingKind.INCURSION }
+        assertEquals(1, incursion.size)
+        assertNull(incursion.single().identified)
         g = tr.game
         tr = engine.tick(g, start + 124 * MINUTE)
         assertEquals((2..6).toList(), tr.pings.map { it.number })
@@ -186,28 +192,83 @@ class RulesTest {
         assertTrue(twice.awards.isEmpty())
     }
 
-    @Test fun aFlagRunStartsOnItsQualifyingFrame() {
+    @Test fun nearTheFlagTheAppAsksYouToGoLiveAndLateIsTooLate() {
         val g = activeGame()
         val p = g.players.values.first()
         val flag = g.flags.getValue(p.team.opponent).location
         val t = DAY + 20 * MINUTE
-        // No frame, or a frame of the wrong thing: no stream, and nothing learned but "not that".
-        assertIs<Verdict.Rejected>(engine.goLive(g, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(flag, t, 5.0), t).verdict)
-        val elsewhere = flag.north(300.0)
-        assertIs<Verdict.Rejected>(engine.goLive(g, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(elsewhere, t, 5.0), t, photo(elsewhere, t)).verdict)
-        // The real thing: live at once, the challenge with it, and no 50 m walk-in needed.
-        val live = engine.goLive(g, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(flag, t, 5.0), t, photo(flag, t))
-        assertEquals(Verdict.Valid, live.verdict)
-        assertNotNull(live.game.streams.getValue("s1").challenge)
-        assertIs<Verdict.Rejected>(engine.endStream(live.game, p.id, "s1", photo(flag, t + 1), t + 1).verdict, "a flag run ends by itself")
-        // Frames through the challenge window: the footage closes itself, and the dispute window opens.
-        var tr = live
-        for (i in 1..6) tr += engine.streamFrame(tr.game, p.id, "s1", LocationFix(flag, t + i * FRAME_MS, 5.0), "c$i", t + i * FRAME_MS)
-        val s = tr.game.streams.getValue("s1")
-        assertEquals(t + GameRules.STREAM_CHALLENGE_WINDOW, s.endedAt)
-        assertTrue(s.pending)
-        // Going quiet before the window closes voids it.
-        assertEquals("Stream dropped", engine.tick(live.game, t + GameRules.STREAM_CHALLENGE_WINDOW).game.streams.getValue("s1").void)
+        // Walking in unstreamed: the app asks, privately, from the player's own position, never the flag's.
+        val near = flag.north(300.0)
+        val asked = engine.reportLocation(g, p.id, LocationFix(near, t, 5.0))
+        val ping = asked.pings.single { it.kind == PingKind.GO_LIVE }
+        assertEquals(setOf(p.id), ping.recipients)
+        assertEquals(near, ping.location)
+        // Going live two minutes later is too late: the capture won't count.
+        val late = t + 2 * MINUTE
+        var tr = engine.goLive(asked.game, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(near, late, 5.0), late)
+        tr += engine.streamFrame(tr.game, p.id, "s1", LocationFix(flag, late + FRAME_MS, 5.0), "c", late + FRAME_MS)
+        val refused = engine.endStream(tr.game, p.id, "s1", photo(flag, late + FRAME_MS), late + FRAME_MS)
+        assertTrue((refused.verdict as Verdict.Rejected).reason.startsWith("You went live too late"))
+    }
+
+    @Test fun gettingCaughtEndsTheStreamOnTheSpot() {
+        val g = activeGame()
+        val p = g.players.values.first()
+        val flag = g.flags.getValue(p.team.opponent).location
+        val t = DAY + 20 * MINUTE
+        val live = engine.stream(g, p.id, StreamPurpose.CAPTURE, flag, t, ::photo) { it.streams.getValue("s1").lastFrame.point == flag }
+        val defender = g.team(p.team.opponent).first()
+        val at = live.game.streams.getValue("s1").lastFrame.at + 1
+        val ble = BleTokenRegistry { tok, _ -> if (tok == "t") p.id else null }
+        val tagged = engine.tag(live.game, defender.id, p.id, photo(flag, at, listOf(BleSighting("t", at, -40))), at, ble)
+        assertEquals(Verdict.Valid, tagged.verdict)
+        assertEquals("Caught", tagged.game.streams.getValue("s1").void)
+    }
+
+    @Test fun sneakingHomeDarkIsAJailing() {
+        val g = activeGame()
+        val p = g.players.values.first()
+        val away = g.flags.getValue(p.team.opponent).location.north(100.0)
+        val home = g.flags.getValue(p.team).location
+        val t = DAY + 20 * MINUTE
+        val over = engine.reportLocation(g, p.id, LocationFix(away, t, 5.0)).game
+        // Silence alone isn't a crime: they can't be seen, but they can't get home either.
+        assertTrue(!engine.tick(over, t + HOUR).game.players.getValue(p.id).isJailed)
+        // A short gap across the line is just signal.
+        assertTrue(!engine.reportLocation(over, p.id, LocationFix(home, t + GameRules.DARK_GAP - 1, 5.0)).game.players.getValue(p.id).isJailed)
+        // A long one is sneaking home: jailed where they were last seen.
+        val snuck = engine.reportLocation(over, p.id, LocationFix(home, t + GameRules.DARK_GAP, 5.0))
+        assertTrue(snuck.game.players.getValue(p.id).isJailed)
+        assertTrue(snuck.awards.any { it.user == p.id && it.reason == "Jailed" })
+        assertTrue(snuck.notices.any { "went dark" in it })
+        // Switching location off says so: then even a quick crossing jails.
+        val off = engine.locationOff(over, p.id, t + 1).game
+        assertTrue(!off.players.getValue(p.id).isJailed)
+        assertTrue(engine.reportLocation(off, p.id, LocationFix(home, t + 30_000, 5.0)).game.players.getValue(p.id).isJailed)
+        // Seen again on enemy ground first, and the slate's clean.
+        val seen = engine.reportLocation(off, p.id, LocationFix(away, t + 20_000, 5.0)).game
+        assertTrue(!engine.reportLocation(seen, p.id, LocationFix(home, t + 30_000, 5.0)).game.players.getValue(p.id).isJailed)
+    }
+
+    @Test fun onEnemyGroundOrInJailYouReCutOffFromYourTeam() {
+        val g = activeGame()
+        val p = g.players.values.first()
+        val mate = g.team(p.team).first { it.id != p.id }
+        val team = Channel.TeamRoom(g.id, p.team)
+        val city = Channel.City(g.city.id)
+        val dm = Channel.Direct.of(g.id, p.id, mate.id)
+        val home = g.flags.getValue(p.team).location
+        val away = g.flags.getValue(p.team.opponent).location
+        val atHome = engine.reportLocation(g, p.id, LocationFix(home, DAY + 20 * MINUTE, 5.0)).game
+        assertTrue(ChatAccess.canPost(p.id, team, atHome) && ChatAccess.canRead(p.id, dm, atHome))
+        val over = engine.reportLocation(atHome, p.id, LocationFix(away, DAY + 21 * MINUTE, 5.0)).game
+        assertTrue(ChatAccess.blackedOut(p.id, over))
+        assertFalse(ChatAccess.canPost(p.id, team, over) || ChatAccess.canPost(p.id, dm, over) || ChatAccess.canPost(p.id, city, over), "nothing gets out")
+        assertFalse(ChatAccess.canRead(p.id, team, over) || ChatAccess.canRead(p.id, dm, over), "and nothing gets in from the team")
+        assertTrue(ChatAccess.canRead(p.id, city, over))
+        val jailed = over.copy(players = over.players + (p.id to over.players.getValue(p.id).copy(jailedAt = DAY)))
+        val back = engine.reportLocation(jailed, p.id, LocationFix(home, DAY + 22 * MINUTE, 5.0)).game
+        assertTrue(ChatAccess.blackedOut(p.id, back), "jailed is cut off, wherever they stand")
     }
 
     @Test fun aCaptureInReviewHoldsTheFinalWhistle() {
