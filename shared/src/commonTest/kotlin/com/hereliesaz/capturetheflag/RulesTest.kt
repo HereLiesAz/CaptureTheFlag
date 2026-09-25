@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag
 
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.geo.DividingLine
 import com.hereliesaz.capturetheflag.geo.GeoPoint
@@ -30,6 +31,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import com.hereliesaz.capturetheflag.rules.GameRules
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -184,18 +186,41 @@ class RulesTest {
         assertTrue(twice.awards.isEmpty())
     }
 
+    @Test fun aCaptureInReviewHoldsTheFinalWhistle() {
+        val g = activeGame()
+        val p = g.players.values.first()
+        val flag = g.flags.getValue(p.team.opponent).location
+        val deadline = (g.phase as GamePhase.Active).deadline
+        val ended = engine.stream(g, p.id, StreamPurpose.CAPTURE, flag, deadline - 5 * MINUTE, ::photo, settle = false)
+        assertEquals(Verdict.Valid, ended.verdict)
+        val defender = g.team(p.team.opponent).first()
+        val disputed = engine.dispute(ended.game, defender.id, "s1", "Doesn't show what was registered", deadline - MINUTE)
+        val pastTime = engine.tick(disputed.game, deadline + MINUTE)
+        assertIs<GamePhase.Active>(pastTime.game.phase, "no tie while a capture is under review")
+        val afterAppeals = deadline + 2 * MINUTE + GameRules.STREAM_APPEAL_WINDOW
+        val upheld = engine.rule(pastTime.game, "s1", review = 0, upheld = true, now = deadline + 2 * MINUTE)
+        assertIs<GamePhase.Active>(engine.tick(upheld.game, deadline + 3 * MINUTE).game.phase, "still open to appeal")
+        assertEquals(Outcome.FlagCaptured(p.team, p.id), (engine.tick(upheld.game, afterAppeals).game.phase as GamePhase.Ended).outcome)
+        val thrownOut = engine.rule(pastTime.game, "s1", review = 0, upheld = false, now = deadline + 2 * MINUTE)
+        assertEquals(Outcome.Tie, (engine.tick(thrownOut.game, afterAppeals).game.phase as GamePhase.Ended).outcome)
+    }
+
     @Test fun doctoredExifRejected() {
         val g = activeGame()
         val p = g.players.values.first()
         val flag = g.flags.getValue(p.team.opponent)
         val t = DAY + 20 * MINUTE
-        val forged = PhotoEvidence("img", flag.location, t, LocationFix(GeoPoint(29.95, -90.19), t, 5.0))
-        assertIs<Verdict.Rejected>(engine.captureFlag(g, p.id, forged, t).verdict)
-        val real = engine.captureFlag(g, p.id, photo(flag.location, t), t)
+        val forged = engine.stream(g, p.id, StreamPurpose.CAPTURE, flag.location, t, { _, at -> PhotoEvidence("img", flag.location, at, LocationFix(GeoPoint(29.95, -90.19), at, 5.0)) })
+        assertIs<Verdict.Rejected>(forged.verdict)
+        val real = engine.stream(g, p.id, StreamPurpose.CAPTURE, flag.location, t, ::photo)
         assertEquals(Outcome.FlagCaptured(p.team, p.id), (real.game.phase as GamePhase.Ended).outcome)
         val pts = real.awards.filterNot { it.reason.startsWith("MVP") || it.reason.startsWith("Most") }.groupBy { it.user }.mapValues { (_, v) -> v.sumOf { it.points } }
-        assertEquals(125L + if (p.isLeader) 15 else 0, pts[p.id])
-        assertTrue(g.team(p.team.opponent).none { it.id in pts })
+        // Capture (100) plus the team win (25); a leader takes their fixed wage instead of the win.
+        val wage = when (p.role) { Role.CAPTAIN -> 300L; Role.CO_CAPTAIN -> 100L; Role.PLAYER -> 25L }
+        assertEquals(100L + wage, pts[p.id])
+        // The losers earn nothing from the ending, except their leaders' fixed wage.
+        assertTrue(g.team(p.team.opponent).filterNot { it.isLeader }.none { it.id in pts })
+        assertTrue(g.team(p.team.opponent).filter { it.role == Role.CAPTAIN }.all { pts[it.id] == 300L })
     }
 
     @Test fun playWindowWithoutCaptureIsATie() {

@@ -6,6 +6,7 @@ import com.hereliesaz.capturetheflag.model.DevicePose
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
@@ -24,6 +25,8 @@ object Kinds {
     const val PING = 34002
     const val COMMIT = 34003
     const val REVEAL = 34004
+    const val RULING = 34005
+    const val REPORT = 34006
     const val RADIO = 35000
 }
 
@@ -43,8 +46,11 @@ sealed interface Action {
     @Serializable @SerialName("placeJail") data class PlaceJail(
         val venue: String, val address: String, val lat: Double, val lng: Double, val photo: Evidence,
     ) : Action
-    @Serializable @SerialName("capture") data class Capture(val photo: Evidence) : Action
-    @Serializable @SerialName("jailbreak") data class Jailbreak(val photo: Evidence) : Action
+    @Serializable @SerialName("goLive") data class GoLive(val stream: String, val purpose: StreamPurpose, val fix: Position) : Action
+    @Serializable @SerialName("frame") data class Frame(val stream: String, val fix: Position, val chunk: String) : Action
+    @Serializable @SerialName("endStream") data class EndStream(val stream: String, val photo: Evidence) : Action
+    @Serializable @SerialName("dispute") data class Dispute(val stream: String, val reason: String) : Action
+    @Serializable @SerialName("appeal") data class Appeal(val stream: String) : Action
     @Serializable @SerialName("tag") data class Tag(val target: String, val photo: Evidence) : Action
     @Serializable @SerialName("decoy") data class Decoy(val lat: Double, val lng: Double) : Action
     @Serializable @SerialName("vanish") data object Vanish : Action
@@ -138,3 +144,30 @@ object Sealed {
 /** Content of a kind-32000 game.open: one per panel referee, each carrying its seed commitment. */
 @Serializable
 data class GameOpen(val open: String, val city: String, val deadline: Long, val panel: List<String>, val commit: String)
+
+/** Content of a kind-34005 ruling: one referee's public vote on one review of a disputed stream. */
+@Serializable
+data class Ruling(val stream: String, val review: Int, val upheld: Boolean)
+
+/**
+ * Content of a kind-34006 report, sealed to each leader of both teams: everything one referee
+ * checked, and how. Leaders see these before anyone else, and can set them side by side with
+ * [Reviews.discrepancies].
+ */
+@Serializable
+data class ReviewReport(val stream: String, val review: Int, val referee: String, val upheld: Boolean, val checks: List<Check>) {
+    @Serializable data class Check(val name: String, val result: Result, val detail: String)
+    @Serializable enum class Result { PASS, FAIL, NOT_RUN }
+}
+
+object Reviews {
+    /** One check the referees didn't all agree on: what each of them found. */
+    data class Discrepancy(val check: String, val findings: Map<String, ReviewReport.Check>)
+
+    /** Where the referees' reports differ, check by check. Empty when they all agree. */
+    fun discrepancies(reports: List<ReviewReport>): List<Discrepancy> =
+        reports.flatMap { r -> r.checks.map { it.name } }.distinct().mapNotNull { name ->
+            val findings = reports.mapNotNull { r -> r.checks.firstOrNull { it.name == name }?.let { r.referee to it } }.toMap()
+            if (findings.values.map { it.result }.distinct().size > 1 || findings.size < reports.size) Discrepancy(name, findings) else null
+        }
+}

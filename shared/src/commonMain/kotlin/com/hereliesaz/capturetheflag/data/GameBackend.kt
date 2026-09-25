@@ -10,6 +10,7 @@ import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.Highlight
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.model.Ping
 import com.hereliesaz.capturetheflag.model.PlayerId
 import com.hereliesaz.capturetheflag.model.User
@@ -49,10 +50,20 @@ interface GameBackend {
 
     suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence): Verdict
 
-    suspend fun captureFlag(cityName: String, photo: PhotoEvidence): Verdict
+    /**
+     * Goes live for a capture or a jailbreak, from [fix], at least 50 m from the target. The
+     * stream's id is in the game's `streams` under this player.
+     */
+    suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix): Verdict
 
-    /** Photograph the enemy jail to free every jailed teammate. */
-    suspend fun jailbreak(cityName: String, photo: PhotoEvidence): Verdict
+    /** One frame of this player's live stream: fix, and the hash of the video written since the last frame. */
+    suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String): Verdict
+
+    /** Ends the stream on its target with a still from the last frame. Then the defenders may dispute. */
+    suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence): Verdict
+
+    /** A defender disputes a finished stream. */
+    suspend fun dispute(cityName: String, streamId: String, reason: String): Verdict
     suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence): Verdict
 
     suspend fun reportLocation(cityName: String, fix: LocationFix)

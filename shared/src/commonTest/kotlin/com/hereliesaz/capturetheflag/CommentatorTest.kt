@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag
 
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.commentary.Career
 import com.hereliesaz.capturetheflag.commentary.Commentator
 import com.hereliesaz.capturetheflag.commentary.HeadToHead
@@ -98,8 +99,8 @@ class CommentatorTest {
         g = engine.tag(g, jailer.id, prisoner.id, photo(home(jailer.team), t, listOf(BleSighting("k", t, -50))), t, ble).game
         val rescuer = g.team(prisoner.team).first { it.id != prisoner.id }
         val jail = g.jails.getValue(prisoner.team.opponent)
-        val start = engine.jailbreak(g, rescuer.id, photo(jail.location, t + MINUTE), t + MINUTE)
-        val lines = booth.narrate(g, start.game, start.awards, start.notices, t + MINUTE).map { it.text }
+        val start = engine.stream(g, rescuer.id, StreamPurpose.JAILBREAK, jail.location, t + MINUTE, { at, ts -> photo(at, ts) }) { it.players.getValue(rescuer.id).breakoutSince != null }
+        val lines = booth.narrate(g, start.game, start.awards, start.notices, t + 2 * MINUTE).map { it.text }
         lines.givesNothingAway(g)
         assertTrue(lines.any { rescuer.user.displayName in it })
     }

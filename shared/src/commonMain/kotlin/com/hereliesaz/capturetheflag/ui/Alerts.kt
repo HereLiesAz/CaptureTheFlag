@@ -5,6 +5,7 @@ import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.Ping
 import com.hereliesaz.capturetheflag.model.PingKind
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.model.PlayerId
 import com.hereliesaz.capturetheflag.rules.GameRules
 
@@ -38,6 +39,14 @@ object Alerts {
         // Your jail under attack: an enemy started holding it.
         val raiders = after.players.values.filter { it.team == cur.team.opponent && it.breakoutSince != null && before.players[it.id]?.breakoutSince == null }
         if (raiders.isNotEmpty() && !cur.isJailed) add("Jailbreak" to "${raiders.joinToString { it.user.displayName }} is holding your jail. ${GameRules.JAILBREAK_HOLD / GameRules.MINUTE} minutes to stop it.")
+        // An enemy live on a flag run, and enemy streams waiting on a dispute.
+        for (st in after.streams.values) {
+            val streamer = after.players[st.by] ?: continue
+            if (streamer.team != cur.team.opponent) continue
+            val had = before.streams[st.id]
+            if (had == null && st.purpose == StreamPurpose.CAPTURE) add("Flag run" to "${streamer.user.displayName} is live on a run at your flag.")
+            if (had?.endedAt == null && st.endedAt != null) add("Dispute?" to "${streamer.user.displayName}'s ${if (st.purpose == StreamPurpose.CAPTURE) "flag run" else "jailbreak"} is in. ${GameRules.STREAM_CONTEST_WINDOW / GameRules.MINUTE} minutes to dispute it.")
+        }
         if (before.phase !is GamePhase.Active && after.phase is GamePhase.Active) add("Live" to "Flags are down. The game is on.")
         (after.phase as? GamePhase.Ended)?.takeIf { before.phase !is GamePhase.Ended }?.let { add("Game over" to "The round in ${after.city.name} has ended.") }
     }

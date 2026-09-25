@@ -71,6 +71,22 @@ object GameRules {
     /** A rescuer must hold the enemy jail this long, unbroken, to free their team. */
     const val JAILBREAK_HOLD = 15 * MINUTE
 
+    /** A capture or jailbreak stream must start at least this far from its target, so the approach is on camera. */
+    const val STREAM_APPROACH_M = 50.0
+    /** The challenge is issued at a random moment this long after going live. */
+    const val STREAM_CHALLENGE_MIN = 10_000L
+    const val STREAM_CHALLENGE_MAX = 60_000L
+    /** The stream must keep running at least this long after the challenge, so it's said on camera. */
+    const val STREAM_CHALLENGE_ANSWER = 20_000L
+    /** Frames further apart than this drop the stream. */
+    const val STREAM_MAX_GAP = 20_000L
+    /** How long defenders have to dispute a finished stream. */
+    const val STREAM_CONTEST_WINDOW = 10 * MINUTE
+    /** A review the referees can't settle in this long is dropped, and the stream counts. */
+    const val STREAM_RULING_WINDOW = 30 * MINUTE
+    /** After a ruling, how long either team's leaders have to appeal it (once per team per round). */
+    const val STREAM_APPEAL_WINDOW = 10 * MINUTE
+
     /** Rotation period for BLE advertisement tokens. */
     const val BLE_TOKEN_ROTATION = 15 * MINUTE
 }

@@ -23,6 +23,7 @@ import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.model.Ping
 import com.hereliesaz.capturetheflag.model.PlayerId
 import com.hereliesaz.capturetheflag.model.Territory
@@ -75,7 +76,11 @@ class InMemoryBackend(
     private val _ledger = MutableStateFlow<List<Award>>(emptyList())
     override val ledger: StateFlow<List<Award>> = _ledger.asStateFlow()
     private val users = mutableMapOf<PlayerId, User>()
-    private val engine = GameEngine(random) { Leaderboard.levelOf(_ledger.value, it) }
+    private val engine = GameEngine(
+        random,
+        levelOf = { Leaderboard.levelOf(_ledger.value, it) },
+        isRookie = { id -> Career.from(_ledger.value, id, liveGames(), ::cityLabel).rookie },
+    )
     private val partitioner = CityPartitioner()
     private val games = mutableMapOf<String, MutableStateFlow<Game?>>()
     private val threads = mutableMapOf<String, MutableStateFlow<List<ChatMessage>>>()
@@ -109,9 +114,9 @@ class InMemoryBackend(
     private val _highlights = MutableStateFlow<List<Highlight>>(emptyList())
     override val highlights: StateFlow<List<Highlight>> = _highlights.asStateFlow()
 
-    /** Finished rounds in which [id] made a Mosts list: the only rounds the booth may dig into. */
+    /** Finished rounds in which [id] made a Mosts list or led a team: the only rounds the booth may dig into. */
     private fun listedIn(id: PlayerId): Set<String> =
-        _highlights.value.filter { it.kind == HighlightKind.MADE_LIST && it.user == id }.map { it.game }.toSet() - liveGames()
+        _highlights.value.filter { (it.kind == HighlightKind.MADE_LIST || it.kind == HighlightKind.LED) && it.user == id }.map { it.game }.toSet() - liveGames()
 
     private fun liveGames() = games.values.mapNotNull { it.value?.takeIf { g -> g.phase !is GamePhase.Ended }?.id }.toSet()
     private fun cityLabel(id: String) = games.values.mapNotNull { it.value?.city }.firstOrNull { it.id == id }?.name
@@ -192,17 +197,22 @@ class InMemoryBackend(
     override suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence) =
         apply(cityName) { engine.placeJail(it, myId(), venueName, address, venue, photo, clock()) }
 
-    override suspend fun jailbreak(cityName: String, photo: PhotoEvidence): Verdict {
-        val ref = enemyOf(cityName)?.let { (g, t) -> g.jails[t]?.photo }
+    override suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix) =
+        apply(cityName) { engine.goLive(it, myId(), "s-${random.nextLong().toULong().toString(36)}", purpose, fix, clock()) }
+
+    override suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String) =
+        apply(cityName) { engine.streamFrame(it, myId(), streamId, fix, chunk, clock()) }
+
+    override suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence): Verdict {
+        val stream = slot(cityName).value?.streams?.get(streamId)
+        val ref = enemyOf(cityName)?.let { (g, t) -> if (stream?.purpose == StreamPurpose.JAILBREAK) g.jails[t]?.photo else g.flags[t]?.photo }
         val score = ref?.let { matcher?.similarity(photo.imageUri, it.imageUri) }
-        return apply(cityName) { engine.jailbreak(it, myId(), photo, clock(), score) }
+        return apply(cityName) { engine.endStream(it, myId(), streamId, photo, clock(), score) }
     }
 
-    override suspend fun captureFlag(cityName: String, photo: PhotoEvidence): Verdict {
-        val ref = enemyOf(cityName)?.let { (g, t) -> g.flags[t]?.photo }
-        val score = ref?.let { matcher?.similarity(photo.imageUri, it.imageUri) }
-        return apply(cityName) { engine.captureFlag(it, myId(), photo, clock(), score) }
-    }
+    // No referees here: a dispute waits out the ruling window and the stream stands.
+    override suspend fun dispute(cityName: String, streamId: String, reason: String) =
+        apply(cityName) { engine.dispute(it, myId(), streamId, reason, clock()) }
 
     /** The current game and the team opposing me, for looking up what I'm photographing. */
     private fun enemyOf(cityName: String) = slot(cityName).value?.let { g -> g.players[myId()]?.let { g to it.team.opponent } }

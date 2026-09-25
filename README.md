@@ -1,6 +1,6 @@
 # Capture the Flag
 
-A city, cut in half. Two teams. Seven days. One photograph ends it.
+A city, cut in half. Two teams. Four days. One live stream ends it.
 
 ## Rules as implemented
 
@@ -9,10 +9,12 @@ A city, cut in half. Two teams. Seven days. One photograph ends it.
 | City split by a straight line, chosen at random from the fairest candidates. Weighted: population 0.4, geography 0.3 (cuts that follow rivers/highways score better), buildings 0.2, land 0.1 | `rules/CityPartitioner.kt` |
 | 24 h sign-up → 1 h flag placement → 4 days of play → tie. Next round starts on request after any ending | `engine/GameEngine.kt`, `rules/GameRules.kt` |
 | Fewer than 2 sign-ups: round cancelled | `GameEngine.closeSignup` |
-| Random, size-balanced teams; one random captain each; captain names up to 2 co-captains | `rules/TeamAssignment.kt` |
+| Random, size-balanced teams; one random captain each; captain names up to 2 co-captains. Rookies (never finished a round) don't lead unless everyone playing is one; veterans are dealt first so each team gets one | `rules/TeamAssignment.kt` |
 | The flag is not an object: leaders choose something already there that cannot move (a statue, a doorway, a mural) at a public space, public building or business, and register it with its address and a photo with GPS EXIF. Venue must sit inside the team's own territory | `Verification.flagRegistration` |
 | Leaders also register a jail: public, own territory, flag first, at least 400 m from it. Public to both teams. Missing flag or jail at the deadline forfeits | `Verification.jailRegistration` |
-| Win: an opponent photographs the flag within 40 m of its registered location | `Verification.flagCapture` |
+| Win: an opponent streams a flag run live (below) ending on the flag within 40 m of its registered location | `GameEngine.goLive`, `Verification.flagCapture` |
+| Captures and jailbreaks are streamed live to the defenders and the city. Go live at least 50 m out; a frame every few seconds (fix, pose, hash of the video since the last frame); a gap over 20 s voids it. A random 10 to 60 s in, a two-word challenge appears that must be said on camera, and the stream must run 20 s past it. It ends on a still of the target, checked like any photo | `GameEngine.goLive`, `streamFrame`, `endStream` |
+| A finished stream counts after 10 minutes unless a defender disputes it. A dispute goes to the referees, which are software: they rerun every check, and a majority rules. Each team's leaders see every referee's full report first (evidence, each referee's ruling, where they disagreed and why). A ruling takes effect after a 10-minute appeal window; each team may appeal once per round, and the second ruling is final. A review that never reports back within 30 minutes lets the stream stand. A capture in play or in review holds the final whistle | `GameEngine.dispute`, `rule`, `appeal`, `node/StreamJudge.kt` |
 | Jail: photo of an opponent standing in your territory. Photo EXIF must match the target's last fix (60 m), and the target's BLE token must have been heard within 60 s | `Verification.tag` |
 | Incursion pings at entry, +60, +30, +15, +10, +5, then every 5 min. Each goes to a fresh random third (rounded up) of the opposing team. Identity attached from ping 6 | `rules/PingSchedule.kt` |
 | Chat: city-wide (anyone registered, onlookers included), private team room, teammate-only DMs | `chat/Chat.kt` |
@@ -83,7 +85,7 @@ Jail is conceptual, but the report is not.
 2. **Report.** Stand within 40 m of the jail for 5 unbroken minutes before the deadline. Stepping away restarts the clock. After that they may leave.
 3. **Frozen.** From the tag until release, a prisoner earns no points and cannot capture, tag, or break anyone out.
 4. **Disqualified.** Miss the deadline and they are out for the round: still frozen, never freed, and every point they earned this round is taken back.
-5. **Jailbreak.** A free teammate photographs the enemy jail (40 m, same checks as a flag capture), then holds it: 15 unbroken minutes within 40 m. Leaving, or being jailed, ends the attempt. They are on enemy ground the whole time, so their incursion pings keep running. When the hold completes, every jailed teammate who is not disqualified goes free, reported or still en route. The rescuer earns 20 per player freed.
+5. **Jailbreak.** A free teammate goes live at least 50 m out, walks into the enemy jail on camera, and holds it on camera: 15 unbroken minutes within 40 m, the challenge said along the way, ending on a still of the jail (same checks as a flag capture). Leaving, a dropped stream, or being jailed ends the attempt. They are on enemy ground the whole time, so their incursion pings keep running. Once the dispute window passes (or a review upholds it), every jailed teammate who is not disqualified goes free, reported or still en route. The rescuer earns 20 per player freed.
 6. **Parole** (perk) only applies once the prisoner has reported.
 7. **Final whistle.** The freeze lifts at the end of the round, so reported prisoners share in the win or tie. The disqualified do not.
 
@@ -100,7 +102,8 @@ Every verified event writes an `Award` to a ledger. Levels, perks and both leade
 | Capture the flag | 100 |
 | Team wins (capture or enemy forfeit) | 25 each |
 | Tie | 5 each |
-| Leader whose flag survived a win or tie | 15 |
+| Captain, win or lose, instead of any win, tie or forfeit points | 300 |
+| Co-captain, the same | 100 |
 | Get home from an incursion unjailed | 2 per ping endured |
 | Jailbreak | 20 per teammate freed |
 | Disqualified | the round's net points, removed |

@@ -51,6 +51,8 @@ import com.hereliesaz.capturetheflag.model.PingKind
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.model.Player
 import com.hereliesaz.capturetheflag.model.Role
+import com.hereliesaz.capturetheflag.model.StreamPurpose
+import androidx.compose.foundation.layout.height
 import com.hereliesaz.capturetheflag.onboarding.Onboarding
 import com.hereliesaz.capturetheflag.rules.Briefing
 import com.hereliesaz.capturetheflag.rules.GameRules
@@ -343,14 +345,32 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 } else g.jails[mine.team]?.let { Text("Jail placed at ${it.venueName}.") }
             }
             is GamePhase.Active -> if (mine.isJailed) JailPanel(g, mine, now) else {
+                val live = g.streams.values.firstOrNull { it.by == mine.id && it.open }
+                if (live != null) {
+                    val status = when {
+                        live.purpose == StreamPurpose.CAPTURE -> "Get the enemy flag in frame, say the challenge, then finish."
+                        live.arrivedAt == null -> "Walk into the enemy jail. Leave once you're there and it's over."
+                        else -> "Hold the jail on camera: ${countdown(live.arrivedAt + GameRules.JAILBREAK_HOLD - now)} to go."
+                    }
+                    platform.LiveCamera(
+                        challenge = live.challenge,
+                        status = status,
+                        onFrame = { fix, chunk -> backend.streamFrame(city, live.id, fix, chunk).let { if (it is Verdict.Rejected) report(it) } },
+                        onFinish = { photo -> photo?.let { scope.launch { report(backend.endStream(city, live.id, it)) } } },
+                        modifier = Modifier.fillMaxWidth().height(520.dp),
+                    )
+                    return@Column
+                }
+                StreamBoard(g, mine, now) { id, reason -> scope.launch { report(backend.dispute(city, id, reason)) } }
                 g.jails[mine.team.opponent]?.let { Text("Enemy jail: ${it.venueName}, ${it.address}") }
                 val held = g.team(mine.team).count { it.isJailed && !it.disqualified }
-                mine.breakoutSince?.let {
-                    Text("BREAKING OUT: hold the jail ${countdown(it + GameRules.JAILBREAK_HOLD - now)} more. Leave and it's over.", fontWeight = FontWeight.Bold)
+                fun goLive(purpose: StreamPurpose) = scope.launch {
+                    val here = platform.location.value ?: return@launch report(Verdict.Rejected("No location yet"))
+                    report(backend.goLive(city, purpose, here))
                 }
-                if (held > 0 && mine.breakoutSince == null) Button(onClick = {
-                    scope.launch { platform.takePhoto()?.let { report(backend.jailbreak(city, it)) } }
-                }) { Text("Start jailbreak: photograph enemy jail, then hold ${GameRules.JAILBREAK_HOLD / GameRules.MINUTE} min ($held held)") }
+                if (held > 0) Button(onClick = { goLive(StreamPurpose.JAILBREAK) }) {
+                    Text("Go live: jailbreak ($held held). Start ${GameRules.STREAM_APPROACH_M.toInt()} m out, hold ${GameRules.JAILBREAK_HOLD / GameRules.MINUTE} min on camera")
+                }
                 val decoysLeft = Progression.perksFor(mine.level).decoysPerGame - (g.decoysUsed[mine.id] ?: 0)
                 if (decoysLeft > 0) OutlinedButton(enabled = !mine.isJailed, onClick = {
                     scope.launch {
@@ -383,9 +403,9 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 GameEngine.flagSense(g, mine.id)?.let { (c, r) ->
                     Text("Flag Sense: enemy flag within ${r.toInt()} m of %.5f, %.5f".fmt(c.lat, c.lng))
                 }
-                Button(enabled = !mine.isJailed, onClick = {
-                    scope.launch { platform.takePhoto()?.let { report(backend.captureFlag(city, it)) } }
-                }) { Text("Photograph enemy flag") }
+                Button(enabled = !mine.isJailed, onClick = { goLive(StreamPurpose.CAPTURE) }) {
+                    Text("Go live: flag run. Start ${GameRules.STREAM_APPROACH_M.toInt()} m out")
+                }
                 Text("Tag an intruder — pick who you photographed:")
                 LazyColumn {
                     items(g.team(mine.team.opponent).filterNot { it.isJailed }) { p ->
@@ -634,5 +654,36 @@ private fun RadioTab(lines: List<Commentary>) {
     if (lines.isEmpty()) return Text("Dead air. Something will happen. It always does.")
     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         items(lines.reversed()) { c -> Text(c.text) }
+    }
+}
+
+/**
+ * Streams that matter to this player right now: their own awaiting the dispute window, the
+ * enemy's live or awaiting (defenders may dispute), and the outcome of any under review.
+ */
+@Composable
+private fun StreamBoard(g: Game, mine: Player, now: Millis, onDispute: (String, String) -> Unit) {
+    val relevant = g.streams.values.filter { it.open || it.pending }
+    for (s in relevant) {
+        val who = g.players[s.by] ?: continue
+        val what = if (s.purpose == StreamPurpose.CAPTURE) "flag run" else "jailbreak"
+        when {
+            s.by == mine.id -> Text(
+                if (s.dispute != null) "Your $what is disputed. The referees' checks are running."
+                else "Your $what is in. Dispute window: ${countdown(s.contestUntil!! - now)}.",
+                fontWeight = FontWeight.Bold,
+            )
+            who.team == mine.team -> Text("${who.user.displayName}'s $what: ${if (s.open) "live" else if (s.dispute != null) "under review" else "counts in ${countdown(s.contestUntil!! - now)}"}.")
+            s.open -> Text("${who.user.displayName} is LIVE on a $what.", fontWeight = FontWeight.Bold)
+            s.dispute != null -> Text("${who.user.displayName}'s $what is under review.")
+            else -> {
+                Text("${who.user.displayName}'s $what counts in ${countdown(s.contestUntil!! - now)} unless disputed.", fontWeight = FontWeight.Bold)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("Not our flag" to "Doesn't show what was registered", "Challenge not said" to "Challenge not said on camera", "Not live" to "Looks pre-recorded or edited")
+                        .filter { s.purpose == StreamPurpose.CAPTURE || it.first != "Not our flag" }
+                        .forEach { (label, reason) -> OutlinedButton(onClick = { onDispute(s.id, reason) }) { Text("Dispute: $label") } }
+                }
+            }
+        }
     }
 }

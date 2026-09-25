@@ -2,6 +2,11 @@ package com.hereliesaz.capturetheflag.node
 
 import com.hereliesaz.capturetheflag.data.DemoCityDirectory
 import com.hereliesaz.capturetheflag.model.GamePhase
+import com.hereliesaz.capturetheflag.model.Team
+import com.hereliesaz.capturetheflag.model.StreamPurpose
+import com.hereliesaz.capturetheflag.model.FlagVenueKind
+import com.hereliesaz.capturetheflag.geo.distanceTo
+import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.model.Role
 import com.hereliesaz.capturetheflag.rules.GameRules
 import io.ktor.client.plugins.websocket.WebSockets as ClientWebSockets
@@ -236,6 +241,92 @@ class NodeTest {
         net.send(liar.sign(Kinds.BATCH, Nostr.json.encodeToString(Batch.serializer(), Batch(1, net.now, emptyList())), listOf(listOf("g", game))))
         net.send(liar.sign(Kinds.BATCH, Nostr.json.encodeToString(Batch.serializer(), Batch(1, net.now + 1, emptyList())), listOf(listOf("g", game))))
         assertTrue(net.referees.take(4).all { liar.pub in it.equivocators })
+    }
+
+    /** A photo that passes every check, taken at [at] facing north at [t]. */
+    private fun shot(at: GeoPoint, t: Long) = Evidence(
+        "img-$t", at.lat, at.lng, t, Position(at.lat, at.lng, t, 5.0), 0.0, Evidence.Pose(0.0, 0.0, 0.0, t),
+    )
+
+    @Test fun aDisputedFlagRunIsReviewedBySoftwareReportedToLeadersAndAppealable() = runTest {
+        val net = Network(5)
+        val players = (1..4).map { Keys.generate() }
+        val keyOf = players.associateBy { it.pub }
+        net.send(action(players[0], Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.referees[0].games.keys.single()
+        val panel = net.referees[0].panelOf(game)!!
+        suspend fun act(k: Keys, a: Action) { net.send(action(k, a, game, panel = panel, at = net.now / 1000)); net.flush() }
+        fun g() = net.referees[0].games.getValue(game)
+        players.forEachIndexed { i, p -> act(p, Action.Join("P$i", "s$i")) }
+        net.now += GameRules.SIGNUP_WINDOW; net.flush()
+        assertIs<GamePhase.FlagPlacement>(g().phase)
+
+        // Each captain places a flag and a jail on their own side.
+        for (team in Team.entries) {
+            val cap = g().players.values.first { it.team == team && it.role == Role.CAPTAIN }
+            val home = g().territory.cells.map { it.center }.filter { g().territory.ownerOf(it) == team }
+            val flag = home.first()
+            val jail = home.first { it.distanceTo(flag) > GameRules.JAIL_MIN_FROM_FLAG_M + 100 }
+            act(keyOf.getValue(cap.id), Action.PlaceFlag("Statue", FlagVenueKind.PUBLIC_SPACE, "1 St", flag.lat, flag.lng, shot(flag, net.now)))
+            act(keyOf.getValue(cap.id), Action.PlaceJail("Jail", "2 St", jail.lat, jail.lng, shot(jail, net.now)))
+        }
+        assertIs<GamePhase.Active>(g().phase)
+
+        // A run at the enemy flag: live from 60 m out, a frame every 5 s, the challenge answered, a still at the flag.
+        val runner = g().players.values.first { !it.isLeader }
+        val target = g().flags.getValue(runner.team.opponent).location
+        val start = GeoPoint(target.lat + 60 / 111_320.0, target.lng)
+        act(keyOf.getValue(runner.id), Action.GoLive("s1", StreamPurpose.CAPTURE, Position(start.lat, start.lng, net.now, 5.0)))
+        while (true) {
+            net.now += 5_000
+            act(keyOf.getValue(runner.id), Action.Frame("s1", Position(target.lat, target.lng, net.now, 5.0), "chunk-${net.now}"))
+            val st = g().streams.getValue("s1")
+            if (st.challengeAt?.let { net.now - it >= GameRules.STREAM_CHALLENGE_ANSWER } == true) break
+        }
+        act(keyOf.getValue(runner.id), Action.EndStream("s1", shot(target, net.now)))
+        assertTrue(g().streams.getValue("s1").pending)
+
+        // A defender disputes. Every referee reviews, votes, and seals its report to all four... leaders only.
+        val defender = g().players.values.first { it.team == runner.team.opponent }
+        act(keyOf.getValue(defender.id), Action.Dispute("s1", "Challenge not said on camera"))
+        net.flush()
+        val rulings = net.store.query(listOf(Filter(kinds = setOf(Kinds.RULING))))
+        assertEquals(5, rulings.size)
+        val leaders = g().players.values.filter { it.isLeader }
+        val reports = net.store.query(listOf(Filter(kinds = setOf(Kinds.REPORT))))
+        assertEquals(5 * leaders.size, reports.size)
+        val captain = leaders.first { it.team == defender.team && it.role == Role.CAPTAIN }
+        val mine = reports.filter { it.tag("p") == captain.id }.map { r ->
+            Nostr.json.decodeFromString(ReviewReport.serializer(), Nip44.open(r.content, keyOf.getValue(captain.id), r.pubkey))
+        }
+        assertEquals(panel.toSet(), mine.map { it.referee }.toSet(), "the captain sees how each referee ruled")
+        assertTrue(mine.all { it.upheld })
+        assertTrue(mine.first().checks.any { it.result == ReviewReport.Result.NOT_RUN }, "and what couldn't be checked, and why")
+        assertTrue(Reviews.discrepancies(mine).isEmpty())
+        val outsider = players.first { k -> g().players.getValue(k.pub).let { !it.isLeader } }
+        assertFails { Nip44.open(reports.first().content, outsider, reports.first().pubkey) }
+        assertNotNull(g().streams.getValue("s1").ruling, "the majority has ruled")
+        assertIs<GamePhase.Active>(g().phase, "but it waits for the appeal window")
+
+        // The defenders' captain appeals: a second review, final at once.
+        act(keyOf.getValue(captain.id), Action.Appeal("s1"))
+        net.flush()
+        val over = g().phase
+        assertIs<GamePhase.Ended>(over)
+        assertEquals(com.hereliesaz.capturetheflag.model.Outcome.FlagCaptured(runner.team, runner.id), over.outcome)
+        assertEquals(1, net.referees.map { it.games.getValue(game).phase }.distinct().size, "all five agree")
+        val paid = net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).flatMap { Nostr.json.decodeFromString(Outcome.serializer(), it.content).awards }
+        assertTrue(paid.any { it.user == captain.id && it.reason == "Captain" && it.points == 300L }, "the losing captain is paid the same")
+    }
+
+    @Test fun discrepanciesShowWhereRefereesDisagree() {
+        fun r(ref: String, result: ReviewReport.Result) = ReviewReport("s", 0, ref, result != ReviewReport.Result.FAIL, listOf(
+            ReviewReport.Check("Unbroken stream", ReviewReport.Result.PASS, "ok"),
+            ReviewReport.Check("Matches the registration photo", result, "detail from $ref"),
+        ))
+        val d = Reviews.discrepancies(listOf(r("a", ReviewReport.Result.PASS), r("b", ReviewReport.Result.FAIL), r("c", ReviewReport.Result.NOT_RUN)))
+        assertEquals(listOf("Matches the registration photo"), d.map { it.check })
+        assertEquals("detail from b", d.single().findings.getValue("b").detail)
     }
 
     @Test fun nip44MatchesTheOfficialVectors() {

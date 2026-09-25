@@ -6,6 +6,7 @@ import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.Player
 import com.hereliesaz.capturetheflag.model.PlayerId
 import com.hereliesaz.capturetheflag.model.Role
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.model.Team
 
 /**
@@ -62,12 +63,20 @@ object Briefing {
         }
         me.isJailed -> buildList {
             add("You are frozen: no points, no tagging, no capture, no jailbreak.")
-            add("You are free when a teammate holds the enemy jail for ${GameRules.JAILBREAK_HOLD / MIN} minutes, or when the round ends.")
+            add("You are free when a teammate streams a ${GameRules.JAILBREAK_HOLD / MIN}-minute hold of the enemy jail, or when the round ends.")
             Progression.perksFor(me.level).paroleMs?.let { add("Parole frees you ${it / GameRules.HOUR} h after you were jailed.") }
         }
-        me.breakoutSince != null -> listOf(
-            "Stay within ${GameRules.JAIL_REPORT_RADIUS_M.toInt()} m of the jail until the hold completes. Leave and it is over.",
-            "You are on enemy ground: your pings keep going, and you can be tagged.",
+        game.streams.values.any { it.by == me.id && it.open } -> buildList {
+            val s = game.streams.values.first { it.by == me.id && it.open }
+            add("You are live. Keep the camera running: a gap over ${GameRules.STREAM_MAX_GAP / 1000} seconds voids the stream.")
+            add("When the challenge appears, say it on camera, and keep streaming at least ${GameRules.STREAM_CHALLENGE_ANSWER / 1000} seconds after.")
+            if (s.purpose == StreamPurpose.CAPTURE) add("Get the enemy flag in frame, from where their leader photographed it, and finish.")
+            else add("Stay within ${GameRules.JAIL_REPORT_RADIUS_M.toInt()} m of the jail for ${GameRules.JAILBREAK_HOLD / MIN} minutes on camera. Leave and it is over.")
+            add("You can be tagged while you stream. Jailed mid-stream, it's void.")
+        }
+        game.streams.values.any { it.by == me.id && it.pending } -> listOf(
+            "Your stream is in. The defenders have ${GameRules.STREAM_CONTEST_WINDOW / MIN} minutes to dispute it; undisputed, it counts.",
+            "A dispute goes to the referees' automated checks: GPS, timing and sensors all the way through, the challenge heard on the audio, and the target matched against the leader's registration photo.",
         )
         standingIn == me.team.opponent -> buildList {
             val inc = game.incursions[me.id]
@@ -81,7 +90,7 @@ object Briefing {
                 else add("They know who you are.")
             }
             add("Anyone on this side can jail you with a photo while your phones are close.")
-            add("Photograph their flag to win. Photograph their jail and hold it to free teammates.")
+            add("Stream a run at their flag to win. Stream a ${GameRules.JAILBREAK_HOLD / MIN}-minute hold of their jail to free teammates. Go live at least ${GameRules.STREAM_APPROACH_M.toInt()} m out.")
             add("Get home unjailed to score for every ping you endured.")
         }
         else -> buildList {
@@ -91,7 +100,10 @@ object Briefing {
                 add("Crossing into enemy ground starts pings about you.")
             }
             if (game.team(me.team).any { it.isJailed && !it.disqualified }) {
-                add("Teammates are jailed. Hold the enemy jail for ${GameRules.JAILBREAK_HOLD / MIN} minutes to free them.")
+                add("Teammates are jailed. Stream a ${GameRules.JAILBREAK_HOLD / MIN}-minute hold of the enemy jail to free them.")
+            }
+            if (game.streams.values.any { it.pending && it.dispute == null && game.players[it.by]?.team == me.team.opponent }) {
+                add("An enemy stream is waiting out its dispute window. If it didn't show your flag or jail, the challenge said, or live footage, dispute it.")
             }
             if (me.isLeader) add("Your flag can't move, so it can't run. Someone has to guard it.")
         }

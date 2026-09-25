@@ -45,6 +45,7 @@ class Referee(
     private val store: EventStore,
     private val cities: CityDirectory,
     private val roster: List<String> = listOf(keys.pub),
+    private val judge: StreamJudge = StreamJudge(keys.pub),
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private class Round(val open: Event, val id: String, val city: String, val panel: List<String>) {
@@ -64,6 +65,10 @@ class Referee(
         var lastLook: Long? = null
         val secrets = mutableListOf<Secret>()
         val uncommitted = mutableListOf<Secret>()
+        /** "stream|review" → referee → its vote, as final batches deliver them. */
+        val votes = mutableMapOf<String, MutableMap<String, Boolean>>()
+        /** Reviews this referee has voted on, from its own published rulings. */
+        val voted = mutableSetOf<String>()
 
         fun final(seq: Long) = signed[seq].orEmpty().values.groupingBy { it }.eachCount().entries.firstOrNull { it.value >= quorum }?.key
     }
@@ -108,14 +113,16 @@ class Referee(
             val events = pendingOf(r)
             if (events.isEmpty() && now - r.lastAt < TICK_MS) continue
             r.proposed += next
-            publish(Kinds.BATCH, Nostr.json.encodeToString(Batch.serializer(), Batch(next, now, events.map { it.id })), r.id)
+            // Strictly after the last batch, even within the same millisecond, or no one will sign it.
+            val at = maxOf(now, r.lastAt + 1)
+            publish(Kinds.BATCH, Nostr.json.encodeToString(Batch.serializer(), Batch(next, at, events.map { it.id })), r.id)
         }
         advance(live = true)
     }
 
     /** Rebuilds every game this node referees from the store, publishing nothing. */
     suspend fun restore() = lock.withLock {
-        store.query(listOf(Filter(kinds = setOf(Kinds.ACTION, Kinds.POSITION, Kinds.BLE_KEY, Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.BATCH))))
+        store.query(listOf(Filter(kinds = setOf(Kinds.ACTION, Kinds.POSITION, Kinds.BLE_KEY, Kinds.RULING, Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.BATCH))))
             .sortedWith(compareBy({ it.created_at }, { it.id }))
             .forEach { ingest(it) }
         advance(live = false)
@@ -132,6 +139,12 @@ class Referee(
                     val open = runCatching { Nostr.json.decodeFromString(Action.serializer(), e.content) }.getOrNull() as? Action.Open
                     if (open != null) openRound(e, open.city)
                 }
+            // Rulings are ordered like player events, so every referee counts the same votes at the same point.
+            Kinds.RULING -> if (game != null) {
+                playerEvents.getOrPut(game) { mutableMapOf() }[e.id] = e
+                if (e.pubkey == keys.pub) runCatching { Nostr.json.decodeFromString(Ruling.serializer(), e.content) }.getOrNull()
+                    ?.let { rounds[game]?.voted?.add("${it.stream}|${it.review}") }
+            }
             Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.BATCH -> {
                 if (game == null) return
                 val r = rounds[game] ?: run { early.getOrPut(game) { mutableListOf() } += e; return }
@@ -235,11 +248,19 @@ class Referee(
      * [deliver] (the proposer only) also sends pings, commitments, the reveal and the radio.
      */
     private suspend fun apply(r: Round, b: Batch, events: List<Event>, live: Boolean, deliver: Boolean) {
-        val engine = GameEngine(Random((r.seed!! + b.seq.bytes()).let(Nostr::sha256).long())) { id -> Leaderboard.levelOf(ledger, id) }
+        // Seeded by the batch's own contents too: a challenge drawn here can't be known before the batch exists.
+        val batchSeed = Nostr.sha256(r.seed!! + b.seq.bytes() + Nostr.sha256(b.events.joinToString(",").toByteArray()))
+        val engine = GameEngine(Random(batchSeed.long()), levelOf = { id -> Leaderboard.levelOf(ledger, id) }, isRookie = { id -> ledger.none { it.user == id } })
         val before = r.game!!
         var total = engine.tick(before, b.at)
         val verdicts = mutableMapOf<String, String>()
         for (e in events) {
+            if (e.kind == Kinds.RULING) {
+                val step = vote(r, engine, total.game, e, b.at) ?: continue
+                verdicts[e.id] = (step.verdict as? Verdict.Rejected)?.reason ?: "ok"
+                total += step
+                continue
+            }
             val body = Sealed.open(e.content, keys, e.pubkey)
             if (body == null) { verdicts[e.id] = "unreadable"; continue }
             val step = runCatching { step(r, engine, total.game, e, body, b.at) }.getOrElse { verdicts[e.id] = "malformed"; null } ?: continue
@@ -248,6 +269,7 @@ class Referee(
         }
         r.game = total.game
         ledger += total.awards
+        if (live) review(r, total.game)
         if (live) publish(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(
             b.seq, verdicts, total.awards.map { Outcome.AwardDto(it.user, it.points, it.reason) }, total.notices, total.game.phase::class.simpleName ?: "",
         )), r.id)
@@ -288,8 +310,11 @@ class Referee(
                     }
                 }
                 is Action.PlaceJail -> engine.placeJail(g, who, a.venue, a.address, GeoPoint(a.lat, a.lng), a.photo.toModel(), now)
-                is Action.Capture -> engine.captureFlag(g, who, a.photo.toModel(), now)
-                is Action.Jailbreak -> engine.jailbreak(g, who, a.photo.toModel(), now)
+                is Action.GoLive -> engine.goLive(g, who, a.stream, a.purpose, a.fix.fix(), now)
+                is Action.Frame -> engine.streamFrame(g, who, a.stream, a.fix.fix(), a.chunk, now)
+                is Action.EndStream -> engine.endStream(g, who, a.stream, a.photo.toModel(), now)
+                is Action.Dispute -> engine.dispute(g, who, a.stream, a.reason, now)
+                is Action.Appeal -> engine.appeal(g, who, a.stream, now)
                 is Action.Tag -> engine.tag(g, who, a.target, a.photo.toModel(), now, ble(r), GameRules.HOUR)
                 is Action.Decoy -> engine.decoy(g, who, GeoPoint(a.lat, a.lng), now)
                 is Action.Vanish -> engine.vanish(g, who, now)
@@ -301,6 +326,35 @@ class Referee(
     }
 
     private fun Round.hold(s: Secret) { secrets += s; uncommitted += s }
+
+    /** A referee's vote, counted once per referee per review. A majority of the panel settles it. */
+    private fun vote(r: Round, engine: GameEngine, g: Game, e: Event, now: Long): Transition? {
+        if (e.pubkey !in r.panel) return null
+        val v = runCatching { Nostr.json.decodeFromString(Ruling.serializer(), e.content) }.getOrNull() ?: return null
+        val key = "${v.stream}|${v.review}"
+        val tally = r.votes.getOrPut(key) { mutableMapOf() }
+        if (tally.putIfAbsent(e.pubkey, v.upheld) != null) return null
+        val decided = tally.values.groupingBy { it }.eachCount().entries.firstOrNull { it.value >= r.quorum }?.key ?: return null
+        return engine.rule(g, v.stream, v.review, decided, now)
+    }
+
+    /**
+     * Reviews every disputed stream awaiting this referee's vote: runs the checks, publishes the
+     * vote, and seals the full report to each leader of both teams, who see it before anyone.
+     */
+    private suspend fun review(r: Round, g: Game) {
+        for (s in g.streams.values) {
+            if (!s.pending || s.dispute == null || s.ruling != null) continue
+            val key = "${s.id}|${s.review}"
+            if (key in r.voted) continue
+            val report = judge.review(g, s)
+            publish(Kinds.RULING, Nostr.json.encodeToString(Ruling.serializer(), Ruling(s.id, s.review, report.upheld)), r.id)
+            val body = Nostr.json.encodeToString(ReviewReport.serializer(), report)
+            for (leader in g.players.values.filter { it.isLeader }) {
+                publish(Kinds.REPORT, Nip44.seal(body, keys, leader.id), r.id, listOf(listOf("p", leader.id)))
+            }
+        }
+    }
 
     /**
      * A commitment's salt, keyed by the sealed body: every referee on the panel derives the same
