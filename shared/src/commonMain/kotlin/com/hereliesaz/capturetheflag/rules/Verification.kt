@@ -92,10 +92,11 @@ object Verification {
         if (game.territory.ownerOf(targetFix.point) != tagger.team) {
             return Verdict.Rejected("That player is not in your territory")
         }
-        if (exif.distanceTo(targetFix.point) > GameRules.TAG_TOLERANCE_M) {
+        val perks = Progression.perksFor(tagger.level)
+        if (exif.distanceTo(targetFix.point) > GameRules.TAG_TOLERANCE_M + perks.sharpLensM) {
             return Verdict.Rejected("That player was not where the photo was taken")
         }
-        val window = GameRules.BLE_WINDOW + Progression.perksFor(tagger.level).bleWindowBonusMs
+        val window = GameRules.BLE_WINDOW + perks.bleWindowBonusMs
         val heard = photo.bleSightings.any {
             abs(it.at - photo.exifTakenAt) <= window && ble.ownerOf(it.token, it.at) == target
         }

@@ -3,6 +3,8 @@ package com.hereliesaz.capturetheflag.model
 import com.hereliesaz.capturetheflag.geo.DividingLine
 import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.geo.Polygon
+import com.hereliesaz.capturetheflag.geo.distanceTo
+import com.hereliesaz.capturetheflag.rules.CityCell
 
 typealias PlayerId = String
 typealias GameId = String
@@ -22,15 +24,34 @@ enum class Team {
 }
 
 /** A metro area as requested by the initiator. */
-data class City(val id: CityId, val name: String, val boundary: Polygon)
+data class City(
+    val id: CityId,
+    val name: String,
+    val boundary: Polygon,
+    /** Local offset from UTC, for time-of-day perks. */
+    val utcOffsetMinutes: Int = 0,
+)
 
 /** The city split in two. Everything inside [City.boundary] belongs to exactly one team. */
-data class Territory(val city: City, val line: DividingLine) {
+data class Territory(
+    val city: City,
+    val line: DividingLine,
+    /** Statistical grid the split was computed from; used for population-density perks. */
+    val cells: List<CityCell> = emptyList(),
+) {
     /** Team owning [p], or null if outside the city. */
     fun ownerOf(p: GeoPoint): Team? = when {
         p !in city.boundary -> null
         line.sideOf(p) == Team.NOIR.lineSide -> Team.NOIR
         else -> Team.BLANC
+    }
+
+    /** Population of the cell nearest [p] relative to the city mean. 1.0 when unknown. */
+    fun densityRatio(p: GeoPoint): Double {
+        if (cells.isEmpty()) return 1.0
+        val mean = cells.sumOf { it.population } / cells.size
+        if (mean <= 0) return 1.0
+        return cells.minBy { it.center.distanceTo(p) }.population / mean
     }
 }
 
@@ -110,7 +131,24 @@ data class Incursion(
     val pingsSent: Int = 0,
 )
 
-/** One location broadcast. [identified] is null until the identity threshold is reached. */
+enum class PingKind {
+    /** Scheduled incursion ping. Decoys are sent as this kind too. */
+    INCURSION,
+    /** Bloodhound: live follow-up after a ping. */
+    TRACKING,
+    /** Tripwire: an enemy crossed in near your flag. */
+    TRIPWIRE,
+    /** Interrogate: forced on-demand ping. */
+    INTERROGATION,
+}
+
+/**
+ * One location broadcast. [identified] is null until the identity threshold is reached.
+ *
+ * [subjectLevel] and [decoyRevealedTo] are per-recipient knowledge. A networked server must
+ * strip [subjectLevel] for recipients without Keen Eye and [decoyRevealedTo] down to the
+ * receiving player before delivery; [subject] never leaves the server for decoys.
+ */
 data class Ping(
     val subject: PlayerId,
     val number: Int,
@@ -118,7 +156,16 @@ data class Ping(
     val at: Millis,
     val identified: User?,
     val recipients: Set<PlayerId>,
+    val kind: PingKind = PingKind.INCURSION,
+    /** Blur radius: the subject is somewhere within this distance of [location]. */
+    val radiusM: Double = 0.0,
+    val subjectLevel: Int? = null,
+    /** Recipients whose Counterintel exposes this as a decoy. */
+    val decoyRevealedTo: Set<PlayerId> = emptySet(),
 )
+
+/** A Doppelgänger decoy still walking: one more ping per waypoint. */
+data class DecoyWalk(val sender: PlayerId, val waypoints: List<GeoPoint>, val nextAt: Millis)
 
 data class Game(
     val id: GameId,
@@ -134,6 +181,18 @@ data class Game(
     /** (tagger, target) pairs already scored this round. Re-jailing the same player pays nothing. */
     val scoredTags: Set<Pair<PlayerId, PlayerId>> = emptySet(),
     val decoysUsed: Map<PlayerId, Int> = emptyMap(),
+    val interrogationsUsed: Map<PlayerId, Int> = emptyMap(),
+    val vanishesUsed: Map<PlayerId, Int> = emptyMap(),
+    /** Players whose next scheduled ping will be swallowed. */
+    val vanishPending: Set<PlayerId> = emptySet(),
+    val lastStandsUsed: Map<PlayerId, Int> = emptyMap(),
+    /** Marker → marked enemy. One Bounty per marker per round. */
+    val bounties: Map<PlayerId, PlayerId> = emptyMap(),
+    /** (hunter, intruder) → Bloodhound trail expiry. */
+    val trails: Map<Pair<PlayerId, PlayerId>, Millis> = emptyMap(),
+    val decoyWalks: List<DecoyWalk> = emptyList(),
+    /** Recipient → intruders they have been pinged about this round. Gates Interrogate. */
+    val pingedAbout: Map<PlayerId, Set<PlayerId>> = emptyMap(),
 ) {
     fun team(t: Team): List<Player> = players.values.filter { it.team == t }
 }

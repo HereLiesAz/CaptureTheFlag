@@ -4,6 +4,7 @@ import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.geo.distanceTo
 import com.hereliesaz.capturetheflag.model.Award
 import com.hereliesaz.capturetheflag.model.City
+import com.hereliesaz.capturetheflag.model.DecoyWalk
 import com.hereliesaz.capturetheflag.model.Flag
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
@@ -15,6 +16,8 @@ import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.Outcome
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import com.hereliesaz.capturetheflag.model.Ping
+import com.hereliesaz.capturetheflag.model.PingKind
+import com.hereliesaz.capturetheflag.model.Player
 import com.hereliesaz.capturetheflag.model.PlayerId
 import com.hereliesaz.capturetheflag.model.Team
 import com.hereliesaz.capturetheflag.model.Territory
@@ -27,6 +30,12 @@ import com.hereliesaz.capturetheflag.rules.Progression
 import com.hereliesaz.capturetheflag.rules.TeamAssignment
 import com.hereliesaz.capturetheflag.rules.Verdict
 import com.hereliesaz.capturetheflag.rules.Verification
+import kotlin.math.PI
+import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 import kotlin.random.Random
 
 /** New game state plus side effects the caller must deliver. */
@@ -36,11 +45,19 @@ data class Transition(
     val pings: List<Ping> = emptyList(),
     /** Points earned by this transition. The caller appends them to the ledger. */
     val awards: List<Award> = emptyList(),
-)
+    /** Public announcements for the city channel. */
+    val notices: List<String> = emptyList(),
+) {
+    operator fun plus(next: Transition) = Transition(
+        next.game, next.verdict, pings + next.pings, awards + next.awards, notices + next.notices,
+    )
+}
 
 /**
  * The whole rulebook as pure functions of (state, input, time, randomness).
  * Intended to run server-side, where it is authoritative; clients only render its output.
+ *
+ * When a hiding perk meets a hunting perk, the higher-level player's perk wins; ties go to the hunter.
  */
 class GameEngine(
     private val random: Random = Random.Default,
@@ -58,27 +75,35 @@ class GameEngine(
         return Transition(game.copy(signups = game.signups + user))
     }
 
-    /** Advances timed phases and emits due pings. Call on a schedule and after every input. */
+    /** Advances timed phases, parole, decoy walks and due pings. Call on a schedule and after every input. */
     fun tick(game: Game, now: Millis): Transition = when (val ph = game.phase) {
         is GamePhase.Signup -> if (now < ph.deadline) Transition(game) else closeSignup(game, now)
-        is GamePhase.FlagPlacement -> if (now < ph.deadline) Transition(game) else closePlacement(game, now)
-        is GamePhase.Active -> if (now >= ph.deadline) end(game, Outcome.Tie, now) else duePings(game, now)
+        is GamePhase.FlagPlacement -> placementTick(game, ph.deadline, now)
+        is GamePhase.Active -> if (now >= ph.deadline) end(game, Outcome.Tie, now) else {
+            val paroled = parole(game, now)
+            val walked = paroled + walkDecoys(paroled.game, now)
+            walked + duePings(walked.game, now)
+        }
         is GamePhase.Ended -> Transition(game)
     }
 
     private fun closeSignup(game: Game, now: Millis): Transition {
         if (game.signups.size < 2 * GameRules.MIN_PLAYERS_PER_TEAM) return end(game, Outcome.Cancelled, now)
-        val players = TeamAssignment.assign(game.signups, random).mapValues { (id, p) -> p.copy(level = levelOf(id)) }
+        val players = TeamAssignment.assign(game.signups, random, levelOf)
         return Transition(
             game.copy(players = players, phase = GamePhase.FlagPlacement(now + GameRules.FLAG_PLACEMENT_WINDOW)),
         )
     }
 
-    private fun closePlacement(game: Game, now: Millis): Transition {
-        val missing = Team.entries.filter { it !in game.flags }
-        return when (missing.size) {
-            0 -> Transition(game.copy(phase = GamePhase.Active(now + GameRules.PLAY_WINDOW)))
-            1 -> end(game, Outcome.Forfeit(missing.single(), "No flag placed in time"), now)
+    /** A team's placement deadline: the base hour plus its best leader's Deliberate. */
+    fun placementDeadline(game: Game, team: Team, base: Millis): Millis =
+        base + (game.team(team).filter { it.isLeader }.maxOfOrNull { perks(it).deliberateMs } ?: 0L)
+
+    private fun placementTick(game: Game, base: Millis, now: Millis): Transition {
+        val expired = Team.entries.filter { it !in game.flags && now >= placementDeadline(game, it, base) }
+        return when (expired.size) {
+            0 -> Transition(game)
+            1 -> end(game, Outcome.Forfeit(expired.single(), "No flag placed in time"), now)
             else -> end(game, Outcome.Tie, now)
         }
     }
@@ -100,10 +125,11 @@ class GameEngine(
         photo: PhotoEvidence,
         now: Millis,
     ): Transition {
-        if (game.phase !is GamePhase.FlagPlacement) return game.reject("Flag placement window is closed")
+        val ph = game.phase as? GamePhase.FlagPlacement ?: return game.reject("Flag placement window is closed")
+        val team = game.players[by]?.team ?: return game.reject("Not in this game")
+        if (now >= placementDeadline(game, team, ph.deadline)) return game.reject("Flag placement window is closed")
         val v = Verification.flagRegistration(game, by, venue, photo, now)
         if (v != Verdict.Valid) return Transition(game, v)
-        val team = game.players.getValue(by).team
         val flag = Flag(team, venueName, kind, address, venue, photo, by, now)
         val placed = game.copy(flags = game.flags + (team to flag))
         // Both flags down early: start the clock now rather than idling out the hour.
@@ -112,54 +138,126 @@ class GameEngine(
         } else Transition(placed)
     }
 
-    /** Ingests a device fix; opens or closes incursions as players cross the line. */
+    /** Ingests a device fix; opens or closes incursions, fires Tripwires and Bloodhound trails. */
     fun reportLocation(game: Game, player: PlayerId, fix: LocationFix): Transition {
         val p = game.players[player] ?: return game.reject("Not in this game")
-        val g = game.copy(lastFix = game.lastFix + (player to fix))
+        var g = game.copy(lastFix = game.lastFix + (player to fix))
         if (g.phase !is GamePhase.Active || p.isJailed) return Transition(g.copy(incursions = g.incursions - player))
         val inEnemy = g.territory.ownerOf(fix.point) == p.team.opponent
         val open = g.incursions[player]
-        val next = when {
-            inEnemy && open == null -> g.copy(incursions = g.incursions + (player to Incursion(player, fix.at)))
-            !inEnemy && open != null -> g.copy(incursions = g.incursions - player)
-            else -> g
+        val pings = mutableListOf<Ping>()
+        val awards = mutableListOf<Award>()
+
+        if (inEnemy && open == null) {
+            // Threshold: the incursion (and its first ping) only starts once the grace runs out.
+            g = g.copy(incursions = g.incursions + (player to Incursion(player, fix.at + perks(p).thresholdMs)))
+            // Tripwire outranks Threshold: equal-or-higher defenders hear the crossing instantly.
+            val tripped = tripwires(g, p, fix.point).filter { it.level >= p.level }.map { it.id }.toSet()
+            if (tripped.isNotEmpty()) {
+                pings += Ping(player, 0, fix.point, fix.at, null, tripped, PingKind.TRIPWIRE, subjectLevel = p.level)
+            }
+        } else if (!inEnemy && open != null) {
+            g = g.copy(incursions = g.incursions - player, vanishPending = g.vanishPending - player)
+            // Made it home unjailed: paid per ping endured. Leaving the city pays nothing.
+            if (g.territory.ownerOf(fix.point) == p.team && open.pingsSent > 0) {
+                awards += g.award(player, Points.PER_PING_SURVIVED.toLong() * open.pingsSent, "Survived ${open.pingsSent} pings", fix.at)
+            }
         }
-        // Made it home unjailed: paid per ping endured. Leaving the city pays nothing.
-        val survived = if (open != null && !inEnemy && g.territory.ownerOf(fix.point) == p.team && open.pingsSent > 0) {
-            listOf(g.award(player, Points.PER_PING_SURVIVED.toLong() * open.pingsSent, "Survived ${open.pingsSent} pings", fix.at))
-        } else emptyList()
-        return duePings(next, fix.at).let { it.copy(awards = it.awards + survived) }
+
+        // Bloodhound: hunters still on this intruder's trail get the live position.
+        val trails = g.trails.filterValues { it >= fix.at }
+        if (inEnemy) {
+            trails.keys.filter { it.second == player }.forEach { (hunterId, _) ->
+                val hunter = g.players.getValue(hunterId)
+                val r = if (hunter.level >= p.level) 0.0 else blurRadius(g, p, fix.point)
+                pings += Ping(player, 0, blur(fix.point, r), fix.at, null, setOf(hunterId), PingKind.TRACKING, r, p.level)
+            }
+        }
+        g = g.copy(trails = trails)
+        return Transition(g, pings = pings, awards = mentored(g, awards)) + duePings(g, fix.at)
     }
 
     private fun duePings(game: Game, now: Millis): Transition {
+        var g = game
         val pings = mutableListOf<Ping>()
-        val incursions = game.incursions.mapValues { (id, inc) ->
+        for ((id, inc) in game.incursions) {
             var cur = inc
-            val subject = game.players.getValue(id)
-            val perks = Progression.perksFor(subject.level)
-            while (PingSchedule.dueAt(cur.enteredAt, cur.pingsSent + 1, perks) <= now) {
+            val subject = g.players.getValue(id)
+            val sp = perks(subject)
+            while (PingSchedule.dueAt(cur.enteredAt, cur.pingsSent + 1, sp) <= now) {
                 val n = cur.pingsSent + 1
-                val fix = game.lastFix[id] ?: break
-                val enemies = game.team(subject.team.opponent).filterNot { it.isJailed }
-                // Veterans with proximity alerts always hear about intruders near them.
-                val watchers = enemies.filter { e ->
-                    val r = Progression.perksFor(e.level).proximityAlertM
-                    r > 0 && game.lastFix[e.id]?.point?.distanceTo(fix.point)?.let { it <= r } == true
-                }.map { it.id }
-                pings += Ping(
-                    subject = id,
-                    number = n,
-                    location = fix.point,
-                    at = PingSchedule.dueAt(cur.enteredAt, n, perks),
-                    identified = subject.user.takeIf { PingSchedule.identifies(n, perks) },
-                    recipients = PingSchedule.recipients(enemies.map { it.id }, random) + watchers,
-                )
+                val fix = g.lastFix[id] ?: break
                 cur = cur.copy(pingsSent = n)
+                if (id in g.vanishPending) {
+                    g = g.copy(vanishPending = g.vanishPending - id)
+                    continue
+                }
+                val ping = broadcast(g, subject, fix.point, n, PingSchedule.dueAt(cur.enteredAt, n, sp))
+                pings += ping
+                g = delivered(g, ping)
             }
-            cur
+            g = g.copy(incursions = g.incursions + (id to cur))
         }
-        return Transition(game.copy(incursions = incursions), pings = pings)
+        return Transition(g, pings = pings)
     }
+
+    /** A real incursion ping about [subject] at [point], with every perk on both sides applied. */
+    private fun broadcast(game: Game, subject: Player, point: GeoPoint, n: Int, at: Millis): Ping {
+        val sp = perks(subject)
+        val enemies = game.team(subject.team.opponent).filterNot { it.isJailed }
+        val localHour = (((at + game.city.utcOffsetMinutes * GameRules.MINUTE) / GameRules.HOUR) % 24 + 24) % 24
+        val night = localHour in 1..4
+        val divisor = min(10.0, 3.0 + sp.shadowDivisor + if (night) sp.nightCoverDivisor else 0.0)
+        val drawn = enemies.shuffled(random).take(max(1, ceil(enemies.size / divisor).toInt())).map { it.id }
+        // Proximity alert, and Witnesses standing near an alerted teammate.
+        val watchers = enemies.filter { e -> near(game, e.id, point, perks(e).proximityAlertM) }
+        val witnesses = enemies.filter { w ->
+            watchers.any { a -> a.id != w.id && game.lastFix[w.id]?.let { near(game, a.id, it.point, perks(a).witnessM) } == true }
+        }
+        val trip = tripwires(game, subject, point)
+        val identified = PingSchedule.identifies(n, sp)
+        val r = if (identified) 0.0 else blurRadius(game, subject, point)
+        return Ping(
+            subject = subject.id,
+            number = n,
+            location = blur(point, r),
+            at = at,
+            identified = subject.user.takeIf { identified },
+            recipients = (drawn + watchers.map { it.id } + witnesses.map { it.id } + trip.map { it.id }).toSet(),
+            radiusM = r,
+            subjectLevel = subject.level,
+        )
+    }
+
+    /** Bookkeeping after a real ping lands: who knows about whom, and who is now on the trail. */
+    private fun delivered(game: Game, ping: Ping): Game {
+        val pinged = game.pingedAbout.toMutableMap()
+        val trails = game.trails.toMutableMap()
+        ping.recipients.forEach { r ->
+            pinged[r] = (pinged[r] ?: emptySet()) + ping.subject
+            val ms = game.players[r]?.let { perks(it).bloodhoundMs } ?: 0L
+            if (ms > 0) trails[r to ping.subject] = ping.at + ms
+        }
+        return game.copy(pingedAbout = pinged, trails = trails)
+    }
+
+    private fun tripwires(game: Game, intruder: Player, point: GeoPoint): List<Player> =
+        game.team(intruder.team.opponent).filter { d ->
+            val r = perks(d).tripwireM
+            !d.isJailed && r > 0 && game.flags[d.team]?.location?.distanceTo(point)?.let { it <= r } == true
+        }
+
+    private fun blurRadius(game: Game, subject: Player, point: GeoPoint): Double {
+        val sp = perks(subject)
+        if (sp.blurM <= 0) return 0.0
+        val crowd = 1 + sp.crowdFactor * max(0.0, game.territory.densityRatio(point) - 1)
+        return sp.blurM * crowd
+    }
+
+    private fun blur(p: GeoPoint, radiusM: Double, rnd: Random = random) = offset(p, radiusM, rnd)
+
+    private fun near(game: Game, who: PlayerId, point: GeoPoint, radiusM: Double) =
+        radiusM > 0 && game.lastFix[who]?.point?.distanceTo(point)?.let { it <= radiusM } == true
 
     fun captureFlag(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
@@ -170,18 +268,106 @@ class GameEngine(
 
     /**
      * Sends a fake anonymous ping to the enemy from [at], which must be in their territory.
-     * Indistinguishable from a real first ping. Limited by the sender's perks.
+     * With Doppelgänger it then walks on, one more ping per waypoint every five minutes.
      */
     fun decoy(game: Game, by: PlayerId, at: GeoPoint, now: Millis): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
         val p = game.players[by] ?: return game.reject("Not in this game")
         if (p.isJailed) return game.reject("Jailed players cannot send decoys")
         val used = game.decoysUsed[by] ?: 0
-        if (used >= Progression.perksFor(p.level).decoysPerGame) return game.reject("No decoys left")
+        if (used >= perks(p).decoysPerGame) return game.reject("No decoys left")
         if (game.territory.ownerOf(at) != p.team.opponent) return game.reject("Decoys must land in enemy territory")
-        val enemies = game.team(p.team.opponent).filterNot { it.isJailed }.map { it.id }
-        val ping = Ping(by, 1, at, now, null, PingSchedule.recipients(enemies, random))
-        return Transition(game.copy(decoysUsed = game.decoysUsed + (by to used + 1)), pings = listOf(ping))
+        val walk = randomWalk(game, p.team.opponent, at, perks(p).doppelgangerSteps)
+        val g = game.copy(
+            decoysUsed = game.decoysUsed + (by to used + 1),
+            decoyWalks = if (walk.isEmpty()) game.decoyWalks else game.decoyWalks + DecoyWalk(by, walk, now + DECOY_STEP),
+        )
+        return Transition(g, pings = listOf(decoyPing(g, p, at, now)))
+    }
+
+    private fun decoyPing(game: Game, sender: Player, at: GeoPoint, now: Millis): Ping {
+        val enemies = game.team(sender.team.opponent).filterNot { it.isJailed }
+        val r = blurRadius(game, sender, at)
+        // Counterintel: only an equal-or-higher-level defender close enough sees through it.
+        val revealed = enemies.filter { e -> e.level >= sender.level && near(game, e.id, at, perks(e).counterintelM) }
+        return Ping(
+            subject = sender.id,
+            number = 1,
+            location = blur(at, r),
+            at = now,
+            identified = null,
+            recipients = PingSchedule.recipients(enemies.map { it.id }, random),
+            radiusM = r,
+            subjectLevel = sender.level,
+            decoyRevealedTo = revealed.map { it.id }.toSet(),
+        )
+    }
+
+    private fun walkDecoys(game: Game, now: Millis): Transition {
+        val pings = mutableListOf<Ping>()
+        val walks = game.decoyWalks.mapNotNull { w ->
+            var cur = w
+            while (cur.waypoints.isNotEmpty() && cur.nextAt <= now) {
+                val sender = game.players.getValue(cur.sender)
+                if (!sender.isJailed) pings += decoyPing(game, sender, cur.waypoints.first(), cur.nextAt)
+                cur = cur.copy(waypoints = cur.waypoints.drop(1), nextAt = cur.nextAt + DECOY_STEP)
+            }
+            cur.takeIf { it.waypoints.isNotEmpty() }
+        }
+        return Transition(game.copy(decoyWalks = walks), pings = pings)
+    }
+
+    private fun randomWalk(game: Game, inside: Team, from: GeoPoint, steps: Int): List<GeoPoint> {
+        val out = mutableListOf<GeoPoint>()
+        var cur = from
+        repeat(steps) {
+            val next = (0 until 8).map { offset(cur, DECOY_STRIDE_M, random, exact = true) }
+                .firstOrNull { game.territory.ownerOf(it) == inside } ?: return out
+            out += next
+            cur = next
+        }
+        return out
+    }
+
+    /** Forces an extra ping, to [by] alone, on an intruder [by] has already been pinged about. */
+    fun interrogate(game: Game, by: PlayerId, subject: PlayerId, now: Millis): Transition {
+        if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
+        val p = game.players[by] ?: return game.reject("Not in this game")
+        if (p.isJailed) return game.reject("Jailed players cannot interrogate")
+        val used = game.interrogationsUsed[by] ?: 0
+        if (used >= perks(p).interrogationsPerGame) return game.reject("No interrogations left")
+        val inc = game.incursions[subject] ?: return game.reject("That intruder is gone")
+        if (subject !in (game.pingedAbout[by] ?: emptySet())) return game.reject("You have not been pinged about them")
+        val s = game.players.getValue(subject)
+        val fix = game.lastFix[subject] ?: return game.reject("No fix on record")
+        val r = if (p.level >= s.level) 0.0 else blurRadius(game, s, fix.point)
+        val ping = Ping(
+            subject, inc.pingsSent, blur(fix.point, r), now,
+            s.user.takeIf { PingSchedule.identifies(max(1, inc.pingsSent), perks(s)) },
+            setOf(by), PingKind.INTERROGATION, r, s.level,
+        )
+        return Transition(game.copy(interrogationsUsed = game.interrogationsUsed + (by to used + 1)), pings = listOf(ping))
+    }
+
+    /** Swallows the caller's next scheduled incursion ping. */
+    fun vanish(game: Game, by: PlayerId): Transition {
+        if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
+        val p = game.players[by] ?: return game.reject("Not in this game")
+        if (by !in game.incursions) return game.reject("Only on enemy ground")
+        if (by in game.vanishPending) return game.reject("Already vanishing")
+        val used = game.vanishesUsed[by] ?: 0
+        if (used >= perks(p).vanishesPerGame) return game.reject("No vanishes left")
+        return Transition(game.copy(vanishesUsed = game.vanishesUsed + (by to used + 1), vanishPending = game.vanishPending + by))
+    }
+
+    /** Marks one enemy per round; jailing them pays the marker's Bounty multiplier to the whole team. */
+    fun bounty(game: Game, by: PlayerId, target: PlayerId): Transition {
+        if (game.phase !is GamePhase.Active && game.phase !is GamePhase.FlagPlacement) return game.reject("Game is not live")
+        val p = game.players[by] ?: return game.reject("Not in this game")
+        if (perks(p).bountyMultiplier <= 1.0) return game.reject("Bounty not unlocked")
+        if (by in game.bounties) return game.reject("Bounty already placed")
+        if (game.players[target]?.team != p.team.opponent) return game.reject("Mark an enemy")
+        return Transition(game.copy(bounties = game.bounties + (by to target)))
     }
 
     fun tag(game: Game, by: PlayerId, target: PlayerId, photo: PhotoEvidence, now: Millis, ble: BleTokenRegistry): Transition {
@@ -189,18 +375,43 @@ class GameEngine(
         val v = Verification.tag(game, by, target, photo, now, ble)
         if (v != Verdict.Valid) return Transition(game, v)
         val victim = game.players.getValue(target)
+        val tagger = game.players.getValue(by)
+
+        // Last Stand: the tag is thrown out, and the whole city hears about it.
+        val stands = game.lastStandsUsed[target] ?: 0
+        if (stands < perks(victim).lastStandsPerGame) {
+            return Transition(
+                game.copy(lastStandsUsed = game.lastStandsUsed + (target to stands + 1)),
+                Verdict.Rejected("${victim.user.displayName} made a Last Stand"),
+                notices = listOf("${victim.user.displayName} made a Last Stand against ${tagger.user.displayName}."),
+            )
+        }
+
         val key = by to target
+        val multiplier = game.team(tagger.team).filter { game.bounties[it.id] == target }
+            .maxOfOrNull { perks(it).bountyMultiplier } ?: 1.0
         val awards = if (key in game.scoredTags) emptyList() else listOf(
-            game.award(by, Progression.tagValue(victim.level), "Jailed ${victim.user.displayName}", now),
+            game.award(by, (Progression.tagValue(victim.level) * multiplier).toLong(), "Jailed ${victim.user.displayName}", now),
             game.award(target, Points.JAILED.toLong(), "Jailed", now),
         )
+        val g = game.copy(
+            players = game.players + (target to victim.copy(jailedAt = now)),
+            incursions = game.incursions - target,
+            vanishPending = game.vanishPending - target,
+            scoredTags = game.scoredTags + key,
+        )
+        return Transition(g, awards = mentored(g, awards))
+    }
+
+    private fun parole(game: Game, now: Millis): Transition {
+        val due = game.players.values.filter { p ->
+            val ms = perks(p).paroleMs
+            p.jailedAt != null && ms != null && now >= p.jailedAt + ms
+        }
+        if (due.isEmpty()) return Transition(game)
         return Transition(
-            game.copy(
-                players = game.players + (target to victim.copy(jailedAt = now)),
-                incursions = game.incursions - target,
-                scoredTags = game.scoredTags + key,
-            ),
-            awards = awards,
+            game.copy(players = game.players + due.associate { it.id to it.copy(jailedAt = null) }),
+            notices = due.map { "${it.user.displayName} is out on parole." },
         )
     }
 
@@ -235,11 +446,56 @@ class GameEngine(
                 .map { game.award(it.id, Points.TEAM_WIN.toLong(), "Opponent forfeited", now) }
             Outcome.Cancelled -> emptyList()
         }
-        return Transition(game.copy(phase = GamePhase.Ended(outcome, now), incursions = emptyMap()), awards = awards)
+        return Transition(
+            game.copy(phase = GamePhase.Ended(outcome, now), incursions = emptyMap(), decoyWalks = emptyList()),
+            awards = mentored(game, awards),
+        )
     }
+
+    /** Mentor: a higher-level teammate within range pays a share of each positive award as a bonus. */
+    private fun mentored(game: Game, awards: List<Award>): List<Award> = awards + awards.mapNotNull { a ->
+        val p = game.players[a.user] ?: return@mapNotNull null
+        val at = game.lastFix[p.id]?.point ?: return@mapNotNull null
+        if (a.points <= 0) return@mapNotNull null
+        val best = game.team(p.team)
+            .filter { m -> m.id != p.id && m.level > p.level && perks(m).mentorShare > 0 && near(game, m.id, at, MENTOR_RANGE_M) }
+            .maxByOrNull { perks(it).mentorShare } ?: return@mapNotNull null
+        val bonus = (a.points * perks(best).mentorShare).toLong()
+        if (bonus > 0) a.copy(points = bonus, reason = "Mentored by ${best.user.displayName}") else null
+    }
+
+    private fun perks(p: Player) = Progression.perksFor(p.level)
 
     private fun Game.award(user: PlayerId, points: Long, reason: String, at: Millis) =
         Award(user, city.id, id, points, reason, at)
 
     private fun Game.reject(reason: String) = Transition(this, Verdict.Rejected(reason))
+
+    companion object {
+        const val DECOY_STEP = 5 * GameRules.MINUTE
+        const val DECOY_STRIDE_M = 150.0
+        const val MENTOR_RANGE_M = 200.0
+
+        /**
+         * Flag Sense: a circle guaranteed to contain the enemy flag. Its offset is fixed per
+         * (game, player) so repeated looks can't be averaged down to the true spot.
+         */
+        fun flagSense(game: Game, player: PlayerId): Pair<GeoPoint, Double>? {
+            val p = game.players[player] ?: return null
+            val r = Progression.perksFor(p.level).flagSenseM
+            val flag = game.flags[p.team.opponent] ?: return null
+            if (r <= 0) return null
+            return offset(flag.location, r * 0.8, Random((game.id + player).hashCode())) to r
+        }
+
+        /** A point up to [radiusM] from [p] (exactly [radiusM] if [exact]) in a random direction. */
+        internal fun offset(p: GeoPoint, radiusM: Double, rnd: Random, exact: Boolean = false): GeoPoint {
+            if (radiusM <= 0) return p
+            val bearing = rnd.nextDouble() * 2 * PI
+            val d = if (exact) radiusM else radiusM * kotlin.math.sqrt(rnd.nextDouble())
+            val dLat = d * cos(bearing) / 111_320.0
+            val dLng = d * sin(bearing) / (111_320.0 * cos(p.lat * PI / 180))
+            return GeoPoint(p.lat + dLat, p.lng + dLng)
+        }
+    }
 }

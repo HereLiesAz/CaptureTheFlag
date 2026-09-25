@@ -75,6 +75,7 @@ class InMemoryBackend(
         val result = t(ticked.game)
         result.pings.forEach { pingBus.tryEmit(it) }
         _ledger.update { it + ticked.awards + result.awards }
+        (ticked.notices + result.notices).forEach { announce(flow.value?.city ?: g.city, it) }
         flow.value = result.game
         return result.verdict
     }
@@ -93,7 +94,7 @@ class InMemoryBackend(
         }
         val (city, cells) = directory.resolve(cityName) ?: error("Unknown city: $cityName")
         val line = partitioner.partition(cells, random).line
-        return engine.newRound("g-${random.nextLong().toULong().toString(36)}", city, Territory(city, line), clock())
+        return engine.newRound("g-${random.nextLong().toULong().toString(36)}", city, Territory(city, line, cells), clock())
             .also { flow.value = it }
     }
 
@@ -128,6 +129,20 @@ class InMemoryBackend(
     }
 
     override suspend fun decoy(cityName: String, at: GeoPoint) = apply(cityName) { engine.decoy(it, myId(), at, clock()) }
+
+    override suspend fun interrogate(cityName: String, subject: PlayerId) =
+        apply(cityName) { engine.interrogate(it, myId(), subject, clock()) }
+
+    override suspend fun vanish(cityName: String) = apply(cityName) { engine.vanish(it, myId()) }
+
+    override suspend fun bounty(cityName: String, target: PlayerId) = apply(cityName) { engine.bounty(it, myId(), target) }
+
+    /** Engine notices go to the city channel under a blank sender. */
+    private fun announce(city: City, text: String) {
+        val key = Channel.City(city.id).key
+        val msg = ChatMessage("n-${random.nextLong().toULong().toString(36)}", key, "", "—", text, clock())
+        threads.getOrPut(key) { MutableStateFlow(emptyList()) }.update { it + msg }
+    }
 
     override fun displayName(user: PlayerId) = users[user]?.displayName ?: user
 
@@ -167,6 +182,6 @@ object DemoCityDirectory : CityDirectory {
                 CityCell(c, 1000 * dense, 200 * dense, 1_000_000.0, if (i == j) 1.0 else 0.0)
             }
         }
-        return City(cityName.lowercase(), cityName, boundary) to cells
+        return City(cityName.lowercase(), cityName, boundary, utcOffsetMinutes = -300) to cells
     }
 }
