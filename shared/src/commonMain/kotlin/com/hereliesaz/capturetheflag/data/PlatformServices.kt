@@ -25,6 +25,9 @@ interface PlatformServices {
     fun startTracking(cityName: String)
     fun stopTracking()
 
+    /** An urgent, sounding alert: someone is on your ground, you've been jailed, your jail is under attack. */
+    fun alert(title: String, body: String)
+
     /** Keeps an ongoing notification showing the newest play-by-play, newest first. Empty clears it. */
     fun showLiveFeed(lines: List<String>)
 
