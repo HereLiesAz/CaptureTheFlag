@@ -3,6 +3,7 @@ package com.hereliesaz.capturetheflag.data
 import com.hereliesaz.capturetheflag.chat.Channel
 import com.hereliesaz.capturetheflag.chat.ChatAccess
 import com.hereliesaz.capturetheflag.chat.ChatMessage
+import com.hereliesaz.capturetheflag.commentary.Career
 import com.hereliesaz.capturetheflag.commentary.Commentary
 import com.hereliesaz.capturetheflag.commentary.Commentator
 import com.hereliesaz.capturetheflag.engine.GameEngine
@@ -86,7 +87,11 @@ class InMemoryBackend(
         return result.verdict
     }
 
-    private val booth = Commentator(random)
+    private val booth = Commentator(random) { id ->
+        val live = games.values.mapNotNull { it.value?.id }.toSet()
+        val names = games.values.mapNotNull { it.value?.city }.associate { it.id to it.name }
+        Career.from(_ledger.value, id, live) { names[it] ?: it.replaceFirstChar { c -> c.uppercase() } }
+    }
     private val feeds = mutableMapOf<String, MutableStateFlow<List<Commentary>>>()
     private val lastLook = mutableMapOf<String, Millis>()
 

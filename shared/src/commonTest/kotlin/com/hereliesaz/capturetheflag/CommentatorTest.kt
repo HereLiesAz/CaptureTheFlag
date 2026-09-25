@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag
 
+import com.hereliesaz.capturetheflag.commentary.Career
 import com.hereliesaz.capturetheflag.commentary.Commentator
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.geo.DividingLine
@@ -33,6 +34,8 @@ class CommentatorTest {
     private val users = (1..6).map { User("p$it", "Name$it", "s") }
     private val engine = GameEngine(Random(5))
     private val booth = Commentator(Random(5))
+    private val veteran = Career(points = 60_000, tags = 12, captures = 2, captureCities = listOf("Chicago", "Memphis"), rounds = 9, wins = 5)
+    private val colourBooth = Commentator(Random(1)) { veteran }
     private fun home(t: Team) = if (territory.ownerOf(north) == t) north else south
     private fun jailFor(h: GeoPoint) = GeoPoint(h.lat + if (h.lat > 30.0) 0.02 else -0.02, h.lng)
     private fun photo(at: GeoPoint, t: Long, ble: List<BleSighting> = emptyList()) = PhotoEvidence("i", at, t, LocationFix(at, t, 5.0), ble)
@@ -43,21 +46,23 @@ class CommentatorTest {
         g = engine.tick(g, DAY).game
         for (t in Team.entries) {
             val cap = g.team(t).first { it.role == Role.CAPTAIN }
-            g = engine.placeFlag(g, cap.id, "V", FlagVenueKind.PUBLIC_SPACE, "a", home(t), photo(home(t), DAY), DAY).game
+            g = engine.placeFlag(g, cap.id, "Secret Venue", FlagVenueKind.PUBLIC_SPACE, "1 Hidden St", home(t), photo(home(t), DAY), DAY).game
             g = engine.placeJail(g, cap.id, "J", "b", jailFor(home(t)), photo(jailFor(home(t)), DAY), DAY).game
         }
         return g
     }
 
-    private fun List<String>.noNamesOrPlaces(g: Game) {
+    /** Names and minutes are fair game. Coordinates, distances and the flag's venue are not. */
+    private fun List<String>.givesNothingAway(g: Game) {
         assertTrue(isNotEmpty())
         forEach { line ->
-            g.players.values.forEach { assertTrue(it.user.displayName !in line, "leaked a name: $line") }
             assertTrue(Regex("\\d+\\.\\d{3,}").find(line) == null, "leaked coordinates: $line")
+            assertTrue(Regex("\\d+\\s?(m|km|metres|meters)\\b").find(line) == null, "leaked a distance: $line")
+            g.flags.values.forEach { assertTrue(it.venueName !in line && it.address !in line, "leaked the flag: $line") }
         }
     }
 
-    @Test fun crossingsAreNarratedLiveWithoutNames() {
+    @Test fun crossingsAreNarratedLiveByNameAndMinute() {
         val g0 = active()
         val p = g0.players.values.first()
         var g = g0
@@ -72,11 +77,12 @@ class CommentatorTest {
             lines += booth.narrate(g, tick.game, tick.awards, tick.notices, t).map { it.text }
             g = tick.game
         }
-        assertTrue(lines.any { "over the line" in it || "crossing" in it || "stepped into" in it })
-        lines.noNamesOrPlaces(g)
+        assertTrue(lines.any { p.user.displayName in it })
+        assertTrue(lines.any { Regex("\\d+ minutes").containsMatchIn(it) })
+        lines.givesNothingAway(g)
     }
 
-    @Test fun breakoutsAreHintedNotLocated() {
+    @Test fun breakoutsAreCalledByName() {
         var g = active()
         val prisoner = g.players.values.first()
         val jailer = g.team(prisoner.team.opponent).first()
@@ -88,8 +94,8 @@ class CommentatorTest {
         val jail = g.jails.getValue(prisoner.team.opponent)
         val start = engine.jailbreak(g, rescuer.id, photo(jail.location, t + MINUTE), t + MINUTE)
         val lines = booth.narrate(g, start.game, start.awards, start.notices, t + MINUTE).map { it.text }
-        lines.noNamesOrPlaces(g)
-        assertTrue(lines.none { jail.venueName in it })
+        lines.givesNothingAway(g)
+        assertTrue(lines.any { rescuer.user.displayName in it })
     }
 
     @Test fun finishedTagsNameNames() {
@@ -110,5 +116,30 @@ class CommentatorTest {
         val first = booth.narrate(g, g, emptyList(), emptyList(), deadline - HOUR + 1, deadline - HOUR - 1)
         val again = booth.narrate(g, g, emptyList(), emptyList(), deadline - HOUR + 2, deadline - HOUR + 1)
         assertTrue(first.any { "ONE HOUR" in it.text } && again.none { "ONE HOUR" in it.text })
+    }
+
+    @Test fun careersColourTheBroadcast() {
+        val g = active()
+        val lines = (1..20).mapNotNull { colourBooth.lull(g, DAY + it * HOUR)?.text }
+        assertTrue(lines.any { "Chicago" in it || "Memphis" in it || "12 career tags" in it || "5 wins" in it || "level" in it })
+    }
+
+    @Test fun hunchesReadIntentNotPosition() {
+        var g = active()
+        val p = g.players.values.first()
+        val flag = g.flags.getValue(p.team.opponent).location
+        val start = GeoPoint(flag.lat + (if (flag.lat > 30.0) -0.03 else 0.03), flag.lng)
+        val booth = Commentator(Random(2))
+        var t = DAY + 1
+        val lines = mutableListOf<String>()
+        for (i in 0..8) {
+            val pt = GeoPoint(start.lat + (flag.lat - start.lat) * i / 10.0, start.lng)
+            val tr = engine.reportLocation(g, p.id, LocationFix(pt, t, 5.0))
+            lines += booth.narrate(g, tr.game, tr.awards, tr.notices, t).map { it.text }
+            g = tr.game
+            t += 15 * MINUTE
+        }
+        assertTrue(lines.any { "flag" in it || "closing" in it }, lines.joinToString("\n"))
+        lines.givesNothingAway(g)
     }
 }

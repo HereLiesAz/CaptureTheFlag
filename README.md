@@ -27,9 +27,13 @@ A rules panel sits above every tab and shows only what applies to the player rig
 
 A live play-by-play in a radio sportscaster's voice (`commentary/Commentator.kt`), in the Radio tab, as a one-line ticker above every tab, and as an ongoing notification (shared with the location service's, so there is only ever one).
 
-It narrates as it happens: crossings, intruders still over the line, the moment the pings give someone away, breakout attempts starting and failing, check-ins, tags, jailbreaks, captures, the clock at 24 h and 1 h, and colour commentary after an hour of quiet.
+It narrates as it happens, by name and by the minute: who crossed and how long they've been over, the ping that gives them away, check-ins, breakout attempts starting and failing, tags with the report deadline, jailbreaks naming who walked, captures, the clock at 24 h and 1 h, and colour commentary after an hour of quiet.
 
-It is public, so it never gives anything away too specifically. Live play is told by team, never by name or place: no coordinates, no flag, no which-jail, time over the line only roughly. Names come out only once something is finished and already on the roster.
+It reads the play and guesses intent (`speculation`): an intruder steadily closing on the enemy flag ("my gut says they're hunting the flag"), drifting toward a jail with teammates inside ("that's a rescue run"), or backing off. Guesses compare distances over time and say what someone wants, never where they are.
+
+It brings up careers (`commentary/Career.kt`, read off the ledger): rookies, past captures and where, career tags, longest survival, biggest breakout, disqualifications, wins, high levels. Sometimes, not every line.
+
+What it never says: coordinates, distances, the flag's venue or address.
 
 ## Jail
 
