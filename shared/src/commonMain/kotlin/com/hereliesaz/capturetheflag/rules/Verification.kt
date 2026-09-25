@@ -1,12 +1,15 @@
 package com.hereliesaz.capturetheflag.rules
 
 import com.hereliesaz.capturetheflag.geo.GeoPoint
+import com.hereliesaz.capturetheflag.geo.bearingTo
 import com.hereliesaz.capturetheflag.geo.distanceTo
+import com.hereliesaz.capturetheflag.geo.headingDelta
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import com.hereliesaz.capturetheflag.model.PlayerId
 import kotlin.math.abs
+import kotlin.math.max
 
 sealed interface Verdict {
     data object Valid : Verdict
@@ -35,7 +38,29 @@ object Verification {
         if (exif.distanceTo(fix.point) > GameRules.EXIF_VS_DEVICE_TOLERANCE_M) {
             return null to "Photo location disagrees with device location"
         }
+        // Sensors: the phone was held like a camera, when the photo says, pointing where the photo says.
+        val pose = e.pose ?: return null to "No motion sensor reading at capture"
+        if (abs(pose.at - taken) > GameRules.POSE_MAX_SKEW) return null to "Sensor reading does not match photo time"
+        if (abs(pose.pitchDeg) > GameRules.POSE_MAX_TILT_DEG) return null to "Phone wasn't held like a camera"
+        val claimed = e.exifDirection ?: return null to "Photo does not record which way it faced"
+        if (headingDelta(claimed, pose.azimuthDeg) > GameRules.DIRECTION_VS_SENSOR_DEG) {
+            return null to "Photo's facing disagrees with the phone's sensors"
+        }
         return exif to null
+    }
+
+    /**
+     * The camera pointed at [target] from [from]. Skipped when standing on top of it; widened
+     * by how much the GPS uncertainty could swing the bearing up close.
+     */
+    private fun facing(e: PhotoEvidence, from: GeoPoint, target: GeoPoint, accuracyM: Double): String? {
+        val d = from.distanceTo(target)
+        if (d < GameRules.FACING_MIN_DISTANCE_M) return null
+        val slack = kotlin.math.atan2(accuracyM, d) * 180 / kotlin.math.PI
+        val heading = e.pose?.azimuthDeg ?: return "No motion sensor reading at capture"
+        return if (headingDelta(heading, from.bearingTo(target)) > GameRules.FACING_TOLERANCE_DEG + slack) {
+            "Camera wasn't pointed at the target"
+        } else null
     }
 
     /** Leader registering the team flag at a venue they identified by address/coordinates. */
@@ -80,6 +105,7 @@ object Verification {
         if (exif.distanceTo(jail.location) > GameRules.JAIL_TOLERANCE_M) {
             return Verdict.Rejected("Photo was not taken at the enemy jail")
         }
+        facing(photo, exif, jail.location, photo.deviceFix!!.accuracyM)?.let { return Verdict.Rejected(it) }
         return Verdict.Valid
     }
 
@@ -93,6 +119,7 @@ object Verification {
         if (exif.distanceTo(flag.location) > GameRules.FLAG_CAPTURE_TOLERANCE_M) {
             return Verdict.Rejected("Photo was not taken at the enemy flag")
         }
+        facing(photo, exif, flag.location, photo.deviceFix!!.accuracyM)?.let { return Verdict.Rejected(it) }
         return Verdict.Valid
     }
 
@@ -124,6 +151,7 @@ object Verification {
             return Verdict.Rejected("That player is not in your territory")
         }
         val perks = Progression.perksFor(tagger.level)
+        facing(photo, exif, targetFix.point, max(photo.deviceFix!!.accuracyM, targetFix.accuracyM))?.let { return Verdict.Rejected(it) }
         if (exif.distanceTo(targetFix.point) > GameRules.TAG_TOLERANCE_M + perks.sharpLensM) {
             return Verdict.Rejected("That player was not where the photo was taken")
         }

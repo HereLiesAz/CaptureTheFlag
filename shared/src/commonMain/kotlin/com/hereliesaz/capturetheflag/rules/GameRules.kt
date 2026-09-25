@@ -37,6 +37,17 @@ object GameRules {
     const val BLE_WINDOW = MINUTE
     /** Fixes worse than this are rejected for verification. */
     const val MAX_FIX_ACCURACY_M = 50.0
+    /** Sensor pose must be sampled this close to the photo's EXIF time. */
+    const val POSE_MAX_SKEW = 3_000L
+    /** The camera must point within this many degrees of the horizon: held like a camera, not flat or at the sky. */
+    const val POSE_MAX_TILT_DEG = 50.0
+    /** The EXIF facing and the sensor heading must agree this closely. */
+    const val DIRECTION_VS_SENSOR_DEG = 25.0
+    /** The heading must point at the target this closely, widened by GPS uncertainty up close. */
+    const val FACING_TOLERANCE_DEG = 45.0
+    /** Closer than this, direction is meaningless and isn't checked. */
+    const val FACING_MIN_DISTANCE_M = 15.0
+
     /** A jail must sit at least this far from its own team's flag. */
     const val JAIL_MIN_FROM_FLAG_M = 400.0
     /** Jail photo vs. registered jail location, for registration and for jailbreak. */

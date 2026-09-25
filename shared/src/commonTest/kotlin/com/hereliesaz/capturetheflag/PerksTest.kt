@@ -12,6 +12,7 @@ import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.Outcome
+import com.hereliesaz.capturetheflag.model.DevicePose
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import com.hereliesaz.capturetheflag.model.PingKind
 import com.hereliesaz.capturetheflag.model.Player
@@ -49,7 +50,7 @@ class PerksTest {
     private fun home(t: Team) = if (territory.ownerOf(north) == t) north else south
     private fun away(t: Team) = home(t.opponent)
     private fun photo(at: GeoPoint, t: Long, ble: List<BleSighting> = emptyList()) =
-        PhotoEvidence("img", at, t, LocationFix(at, t, 5.0), ble)
+        PhotoEvidence("img", at, t, LocationFix(at, t, 5.0), ble, exifDirection = 0.0, pose = DevicePose(0.0, 0.0, 0.0, t))
 
     private fun active(): Game {
         var g = engine.newRound("g", city, territory, 0)

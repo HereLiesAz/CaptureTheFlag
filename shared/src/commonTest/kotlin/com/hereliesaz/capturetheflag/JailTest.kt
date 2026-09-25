@@ -11,6 +11,7 @@ import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.LocationFix
+import com.hereliesaz.capturetheflag.model.DevicePose
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import com.hereliesaz.capturetheflag.model.Player
 import com.hereliesaz.capturetheflag.model.Role
@@ -47,7 +48,7 @@ class JailTest {
     private fun home(t: Team) = if (territory.ownerOf(north) == t) north else south
     private fun jailFor(home: GeoPoint) = GeoPoint(home.lat + if (home.lat > 30.0) 0.02 else -0.02, home.lng)
     private fun photo(at: GeoPoint, t: Long, ble: List<BleSighting> = emptyList()) =
-        PhotoEvidence("img", at, t, LocationFix(at, t, 5.0), ble)
+        PhotoEvidence("img", at, t, LocationFix(at, t, 5.0), ble, exifDirection = 0.0, pose = DevicePose(0.0, 0.0, 0.0, t))
     private fun Game.p(id: String) = players.getValue(id)
 
     private fun placement(): Game {

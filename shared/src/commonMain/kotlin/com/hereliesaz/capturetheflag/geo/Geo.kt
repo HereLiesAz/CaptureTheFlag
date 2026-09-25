@@ -22,6 +22,20 @@ fun GeoPoint.distanceTo(other: GeoPoint): Double {
     return 2 * EARTH_RADIUS_M * asin(sqrt(h.coerceIn(0.0, 1.0)))
 }
 
+/** Initial great-circle bearing to [other], degrees clockwise from true north, 0 until 360. */
+fun GeoPoint.bearingTo(other: GeoPoint): Double {
+    val phi1 = lat.rad(); val phi2 = other.lat.rad(); val dLambda = (other.lng - lng).rad()
+    val y = sin(dLambda) * cos(phi2)
+    val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLambda)
+    return (kotlin.math.atan2(y, x) * 180 / PI + 360) % 360
+}
+
+/** Smallest difference between two compass headings, 0 until 180. */
+fun headingDelta(a: Double, b: Double): Double {
+    val d = kotlin.math.abs(((a - b) % 360 + 360) % 360)
+    return if (d > 180) 360 - d else d
+}
+
 /** Closed ring of vertices; the last vertex implicitly joins the first. */
 data class Polygon(val ring: List<GeoPoint>) {
     init { require(ring.size >= 3) { "Polygon needs at least 3 vertices" } }

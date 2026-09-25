@@ -8,6 +8,7 @@ import com.hereliesaz.capturetheflag.model.City
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.LocationFix
+import com.hereliesaz.capturetheflag.model.DevicePose
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import com.hereliesaz.capturetheflag.model.Ping
 import com.hereliesaz.capturetheflag.model.PingKind
@@ -30,7 +31,7 @@ class AlertsTest {
     )))
     private val territory = Territory(city, DividingLine(GeoPoint(30.0, -90.1), 90.0))
     private val engine = GameEngine(Random(1))
-    private fun photo(at: GeoPoint, t: Long) = PhotoEvidence("i", at, t, LocationFix(at, t, 5.0))
+    private fun photo(at: GeoPoint, t: Long) = PhotoEvidence("i", at, t, LocationFix(at, t, 5.0), exifDirection = 0.0, pose = DevicePose(0.0, 0.0, 0.0, t))
 
     private fun active(): Game {
         var g = engine.newRound("g", city, territory, 0)

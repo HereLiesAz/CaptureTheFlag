@@ -3,6 +3,11 @@ package com.hereliesaz.capturetheflag.platform
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.hardware.GeomagneticField
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -34,15 +39,59 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.exifinterface.media.ExifInterface
 import java.io.File
+import kotlin.math.asin
+import kotlin.math.atan2
+import kotlin.math.roundToLong
 
 /**
  * The game's own camera. Every photo is stamped with GPS EXIF from the fix the caller took at
  * the shutter, so evidence never depends on whether the stock camera app has location tagging
- * on. Front lens for selfies, back lens for everything else.
+ * on. At the shutter it also reads the rotation-vector sensor: which way the camera faced (true
+ * north), how far above or below the horizon, and its roll. The facing goes into the photo's
+ * EXIF (GPSImgDirection) and the whole pose goes back with the result, so the server can check
+ * the photo's claim against the phone's own sensors. Front lens for selfies, back for the rest.
  */
-class CameraActivity : ComponentActivity() {
+class CameraActivity : ComponentActivity(), SensorEventListener {
     private val capture = ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build()
+    private val sensors by lazy { getSystemService(SensorManager::class.java) }
+    private val rotation = FloatArray(9)
+    @Volatile private var haveRotation = false
+
+    override fun onResume() {
+        super.onResume()
+        sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+    }
+
+    override fun onPause() {
+        sensors.unregisterListener(this)
+        super.onPause()
+    }
+
+    override fun onSensorChanged(e: SensorEvent) {
+        SensorManager.getRotationMatrixFromVector(rotation, e.values)
+        haveRotation = true
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    /**
+     * The back camera looks along the device's −Z axis. Rotated into the world frame
+     * (x east, y north, z up) that gives its compass heading and elevation. Heading is
+     * magnetic from the sensor, corrected to true north with the local declination.
+     */
+    private fun pose(fix: Location?): Pose? {
+        if (!haveRotation) return null
+        val r = rotation.copyOf()
+        val east = -r[2]; val north = -r[5]; val up = -r[8]
+        val magnetic = Math.toDegrees(atan2(east.toDouble(), north.toDouble()))
+        val declination = fix?.let { GeomagneticField(it.latitude.toFloat(), it.longitude.toFloat(), it.altitude.toFloat(), it.time).declination } ?: 0f
+        val azimuth = ((magnetic + declination) % 360 + 360) % 360
+        val pitch = Math.toDegrees(asin(up.coerceIn(-1f, 1f).toDouble()))
+        val roll = Math.toDegrees(atan2(r[6].toDouble(), r[7].toDouble()))
+        return Pose(azimuth, pitch, roll, System.currentTimeMillis())
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,7 +119,11 @@ class CameraActivity : ComponentActivity() {
                         .background(if (busy) Color.DarkGray else Color.White.copy(alpha = 0.15f))
                         .clickable(enabled = !busy) {
                             busy = true
-                            shoot(out, fix, front) { ok, msg -> busy = false; if (ok) finishWith(true) else error = msg }
+                            val p = pose(fix)
+                            shoot(out, fix, front) { ok, msg ->
+                                busy = false
+                                if (ok) { p?.let { stampFacing(out, it.azimuth) }; finishWith(p) } else error = msg
+                            }
                         },
                 )
             }
@@ -100,15 +153,35 @@ class CameraActivity : ComponentActivity() {
         })
     }
 
-    private fun finishWith(ok: Boolean) {
-        setResult(if (ok) Activity.RESULT_OK else Activity.RESULT_CANCELED)
+    /** Writes the facing into the photo itself: GPSImgDirection, true north. */
+    private fun stampFacing(file: File, azimuth: Double) = runCatching {
+        ExifInterface(file).apply {
+            setAttribute(ExifInterface.TAG_GPS_IMG_DIRECTION, "${(azimuth * 100).roundToLong()}/100")
+            setAttribute(ExifInterface.TAG_GPS_IMG_DIRECTION_REF, "T")
+            saveAttributes()
+        }
+    }
+
+    private fun finishWith(p: Pose?) {
+        setResult(Activity.RESULT_OK, Intent().apply {
+            p?.let {
+                putExtra(EXTRA_AZIMUTH, it.azimuth); putExtra(EXTRA_PITCH, it.pitch)
+                putExtra(EXTRA_ROLL, it.roll); putExtra(EXTRA_POSE_AT, it.at)
+            }
+        })
         finish()
     }
+
+    /** Orientation at the shutter. See [pose]. */
+    data class Pose(val azimuth: Double, val pitch: Double, val roll: Double, val at: Long)
+
+    /** What came back: whether a photo was taken, and the pose if the sensor had one. */
+    data class Shot(val taken: Boolean, val pose: Pose?)
 
     /** What to shoot: where to save, which lens, and the fix to stamp into EXIF. */
     data class Request(val path: String, val front: Boolean, val fix: Location?)
 
-    class Contract : ActivityResultContract<Request, Boolean>() {
+    class Contract : ActivityResultContract<Request, Shot>() {
         override fun createIntent(context: Context, input: Request) = Intent(context, CameraActivity::class.java)
             .putExtra(EXTRA_PATH, input.path)
             .putExtra(EXTRA_FRONT, input.front)
@@ -119,7 +192,13 @@ class CameraActivity : ComponentActivity() {
                 }
             }
 
-        override fun parseResult(resultCode: Int, intent: Intent?) = resultCode == Activity.RESULT_OK
+        override fun parseResult(resultCode: Int, intent: Intent?): Shot {
+            if (resultCode != Activity.RESULT_OK) return Shot(false, null)
+            val pose = intent?.takeIf { it.hasExtra(EXTRA_AZIMUTH) }?.let {
+                Pose(it.getDoubleExtra(EXTRA_AZIMUTH, 0.0), it.getDoubleExtra(EXTRA_PITCH, 0.0), it.getDoubleExtra(EXTRA_ROLL, 0.0), it.getLongExtra(EXTRA_POSE_AT, 0))
+            }
+            return Shot(true, pose)
+        }
     }
 
     private companion object {
@@ -129,5 +208,9 @@ class CameraActivity : ComponentActivity() {
         const val EXTRA_LNG = "lng"
         const val EXTRA_TIME = "time"
         const val EXTRA_ACCURACY = "accuracy"
+        const val EXTRA_AZIMUTH = "azimuth"
+        const val EXTRA_PITCH = "pitch"
+        const val EXTRA_ROLL = "roll"
+        const val EXTRA_POSE_AT = "poseAt"
     }
 }

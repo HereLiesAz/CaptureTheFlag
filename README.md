@@ -17,7 +17,18 @@ A city, cut in half. Two teams. Seven days. One photograph ends it.
 | Incursion pings at entry, +60, +30, +15, +10, +5, then every 5 min. Each goes to a fresh random third (rounded up) of the opposing team. Identity attached from ping 6 | `rules/PingSchedule.kt` |
 | Chat: city-wide (anyone registered, onlookers included), private team room, teammate-only DMs | `chat/Chat.kt` |
 
-Every photo is also checked for freshness (2 min), and its EXIF location against the phone's live fused fix (60 m) to catch doctored metadata.
+Every photo goes through the same checks (`Verification.sound`, `Verification.facing`):
+
+| Check | Tolerance |
+|---|---|
+| EXIF location and time exist; photo is fresh | 2 min |
+| EXIF location agrees with the phone's own GPS fix, taken at the shutter | 60 m, fix accurate to 50 m |
+| Motion-sensor pose sampled when the photo was taken | 3 s |
+| Phone held like a camera: camera axis near the horizon | ±50° |
+| Photo's claimed facing (EXIF GPSImgDirection) agrees with the sensor heading | 25° |
+| Camera pointed at the target (flag, jail, tagged player) | 45°, widened by GPS uncertainty up close; not judged within 15 m |
+
+Photos come from the in-app camera (`platform/CameraActivity.kt`), which stamps GPS from a fresh fix, reads the rotation-vector sensor at the shutter (heading corrected to true north by local magnetic declination), writes the facing into EXIF, and hands the pose back with the photo. A phone without a rotation sensor can't produce valid evidence.
 
 ## City onboarding
 
