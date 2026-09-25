@@ -44,6 +44,8 @@ data class Player(
     val team: Team,
     val role: Role = Role.PLAYER,
     val jailedAt: Millis? = null,
+    /** Level snapshotted when teams are dealt; fixed for the round. */
+    val level: Int = 1,
 ) {
     val id: PlayerId get() = user.id
     val isLeader: Boolean get() = role != Role.PLAYER
@@ -129,6 +131,19 @@ data class Game(
     val flags: Map<Team, Flag> = emptyMap(),
     val lastFix: Map<PlayerId, LocationFix> = emptyMap(),
     val incursions: Map<PlayerId, Incursion> = emptyMap(),
+    /** (tagger, target) pairs already scored this round. Re-jailing the same player pays nothing. */
+    val scoredTags: Set<Pair<PlayerId, PlayerId>> = emptySet(),
+    val decoysUsed: Map<PlayerId, Int> = emptyMap(),
 ) {
     fun team(t: Team): List<Player> = players.values.filter { it.team == t }
 }
+
+/** Points granted to one user by one verified event. Summed into global and per-city standings. */
+data class Award(
+    val user: PlayerId,
+    val city: CityId,
+    val game: GameId,
+    val points: Long,
+    val reason: String,
+    val at: Millis,
+)

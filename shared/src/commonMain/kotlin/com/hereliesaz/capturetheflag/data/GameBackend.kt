@@ -3,6 +3,7 @@ package com.hereliesaz.capturetheflag.data
 import com.hereliesaz.capturetheflag.chat.Channel
 import com.hereliesaz.capturetheflag.chat.ChatMessage
 import com.hereliesaz.capturetheflag.geo.GeoPoint
+import com.hereliesaz.capturetheflag.model.Award
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.LocationFix
@@ -50,6 +51,15 @@ interface GameBackend {
 
     /** Pings addressed to me. */
     fun pings(cityName: String): Flow<Ping>
+
+    /** Sends a decoy ping from [at]. Requires the decoy perk. */
+    suspend fun decoy(cityName: String, at: GeoPoint): Verdict
+
+    /** Every point ever awarded. Standings and levels derive from it via [com.hereliesaz.capturetheflag.rules.Leaderboard]. */
+    val ledger: StateFlow<List<Award>>
+
+    /** Display name for any registered user, for leaderboards. */
+    fun displayName(user: PlayerId): String
 
     fun messages(channel: Channel): StateFlow<List<ChatMessage>>
     suspend fun send(channel: Channel, body: String): Verdict
