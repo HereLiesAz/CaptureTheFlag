@@ -20,12 +20,15 @@ object Kinds {
     const val BATCH = 34000
     const val OUTCOME = 34001
     const val PING = 34002
+    const val COMMIT = 34003
+    const val REVEAL = 34004
     const val RADIO = 35000
 }
 
 /**
- * What a player asks for, as the content of a kind-33000 event tagged `["g", gameId]`
- * (or `["c", city]` for [Open]). The signer's public key is the player id.
+ * What a player asks for, as the content of a kind-33000 event. The signer's public key is the
+ * player id. [Open] is plaintext tagged `["c", city]`; everything else is tagged `["g", gameId]`
+ * and NIP-44 encrypted to the game's referee (the author of its `game.open`).
  */
 @Serializable
 sealed interface Action {
@@ -47,7 +50,7 @@ sealed interface Action {
     @Serializable @SerialName("bounty") data class Bounty(val target: String) : Action
 }
 
-/** A position report, content of kind 33001. Prototype: plaintext. Design: NIP-44 to the referees. */
+/** A position report, content of kind 33001, NIP-44 encrypted to the referee. */
 @Serializable
 data class Position(val lat: Double, val lng: Double, val at: Long, val accuracy: Double) {
     fun fix() = LocationFix(GeoPoint(lat, lng), at, accuracy)
@@ -94,3 +97,24 @@ data class Outcome(
 ) {
     @Serializable data class AwardDto(val user: String, val points: Long, val reason: String)
 }
+
+/** Content of a kind-34002 ping, NIP-44 encrypted to its one recipient (tagged `p`). */
+@Serializable
+data class PingDto(val number: Int, val lat: Double, val lng: Double, val radius: Double, val kind: String)
+
+/**
+ * A secret the referee holds during a round. [preimage] is canonical text (`lat,lng,photoHash`
+ * for a flag, the hex key for BLE); the public commitment is `sha256(preimage|salt)`.
+ */
+@Serializable
+data class Secret(val what: String, val who: String, val team: String? = null, val preimage: String, val salt: String) {
+    val commitment get() = Nostr.sha256("$preimage|$salt".toByteArray()).toHex()
+}
+
+/** Content of a kind-34003 commit: what exists, not what it is. */
+@Serializable
+data class Commit(val what: String, val who: String, val team: String? = null, val commitment: String)
+
+/** Content of a kind-34004 reveal, published once the round ends. */
+@Serializable
+data class Reveal(val secrets: List<Secret>)

@@ -190,7 +190,8 @@ The first node (`node/`) proves the core loop, not the whole design. Built so fa
 4. **Surveyor.** Serves `city.survey` using the existing `onboarding/` pipeline.
 
 5. **Archive.** Mirrors to a git clone or a synced folder, bootstraps from it, and caches surveys there.
+6. **Secrets.** NIP-44 v2 (`Nip44.kt`), checked against the official test vectors. Every in-game player event (actions, positions, BLE keys) is sealed to the referee; anything sent in the clear is ruled `unreadable`. Pings go out as one sealed event per recipient. Accepted flags and BLE keys get a public `commit` (`sha256(preimage|salt)`, the salt an HMAC under the referee's key, so a restored referee reveals what the live one committed to) and a `reveal` when the round ends.
 
-What the prototype cuts, and must not ship with: positions, pings, flag registrations and BLE keys travel **in plaintext** (the design says NIP-44), one referee rules alone (the design says 3 of 5), and evidence isn't attested.
+What the prototype cuts, and must not ship with: one referee rules alone (the design says 3 of 5), evidence isn't attested, and a team learns its own flag only from its captain, not from a referee-sealed copy (that arrives with the phone client).
 
-Next: NIP-44 secrets, quorum ordering and the seed ceremony across 5 referees, key attestation, the media store, the matcher, replacement and pause, and a phone client speaking this protocol instead of `InMemoryBackend`.
+Next: quorum ordering and the seed ceremony across 5 referees, key attestation, the media store, the matcher, replacement and pause, and a phone client speaking this protocol instead of `InMemoryBackend`.
