@@ -11,6 +11,7 @@ import com.hereliesaz.capturetheflag.onboarding.CityOnboarding
 import com.hereliesaz.capturetheflag.onboarding.OpenData
 import androidx.lifecycle.lifecycleScope
 import com.hereliesaz.capturetheflag.data.GameBackend
+import com.hereliesaz.capturetheflag.net.MediaClient
 import com.hereliesaz.capturetheflag.net.NodeBackend
 import com.hereliesaz.capturetheflag.net.RelayClient
 import com.hereliesaz.capturetheflag.platform.AndroidPlatformServices
@@ -26,7 +27,10 @@ class MainActivity : ComponentActivity() {
         // On a node: the real, networked game. Without one: the built-in single-phone test server,
         // which gathers city data itself from open data (OpenStreetMap, WorldPop).
         val backend: GameBackend = identity.node?.let { url ->
-            NodeBackend(identity.keys, RelayClient.open(url, lifecycleScope), lifecycleScope).also { node ->
+            NodeBackend(
+                identity.keys, RelayClient.open(url, lifecycleScope), lifecycleScope,
+                media = MediaClient.open(url), read = platform::readMedia,
+            ).also { node ->
                 identity.profile?.let { (name, selfie) -> lifecycleScope.launch { node.register(name, selfie) } }
                 lifecycleScope.launch { node.me.collect { u -> u?.let { identity.profile = it.displayName to (it.selfieUrl ?: "") } } }
             }

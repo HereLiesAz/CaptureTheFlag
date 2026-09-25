@@ -17,6 +17,9 @@ import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
+import androidx.compose.runtime.rememberUpdatedState
+import kotlinx.coroutines.CompletableDeferred
+import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -58,21 +61,20 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.RandomAccessFile
 import java.security.MessageDigest
 import kotlin.coroutines.resume
 
-/** How often a live stream sends a frame: well inside the engine's 20-second gap limit. */
+/** How long each segment runs, and how often a live stream sends a frame: well inside the engine's 20-second gap limit. */
 private const val FRAME_EVERY_MS = 5_000L
 
 /**
- * The live camera: preview, video with sound to a local file, and a still for the winning
- * frame. Recording carries on past the winning frame into the victory lap ([lap]), when frames
- * stop: the referees' footage ends at the win, and the rest is the player's.
+ * The live camera: preview, video with sound, and a still for the winning frame.
  *
- * Every [FRAME_EVERY_MS] it takes a fresh fix and hashes the bytes the recorder has written
- * since the last frame. Those hashes, signed and sent as they happen, pin the video: whoever
- * reviews it later can check every stretch against what was reported live.
+ * Video is recorded in [FRAME_EVERY_MS] segments, each a complete little video that plays on its
+ * own, so viewers can watch as they arrive. Every segment goes out with a fresh fix and its
+ * SHA-256; those hashes, signed and sent as they happen, pin the video, so whoever reviews it
+ * later can check every stretch against what was reported live. After the winning frame the
+ * segments keep coming as the victory lap ([lap]): for viewers, not referees.
  */
 @SuppressLint("MissingPermission")
 @Composable
@@ -82,7 +84,8 @@ internal fun LiveCameraView(
     status: String,
     lap: Boolean,
     finishLabel: String?,
-    onFrame: suspend (LocationFix, String) -> Unit,
+    onFrame: suspend (LocationFix, String, ByteArray) -> Unit,
+    onLapSegment: suspend (String, ByteArray) -> Unit,
     onFinish: (com.hereliesaz.capturetheflag.model.PhotoEvidence?) -> Unit,
     modifier: Modifier,
 ) {
@@ -93,8 +96,29 @@ internal fun LiveCameraView(
     val orientation = remember { Orientation(context) }
     val still = remember { ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build() }
     val video = remember { VideoCapture.withOutput(Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.SD)).build()) }
-    val file = remember { File(File(context.filesDir, "streams").apply { mkdirs() }, "stream-${System.currentTimeMillis()}.mp4") }
+    val dir = remember { File(context.filesDir, "streams").apply { mkdirs() } }
     var recording by remember { mutableStateOf<Recording?>(null) }
+    var finished by remember { mutableStateOf<CompletableDeferred<File>?>(null) }
+    val laps by rememberUpdatedState(lap)
+
+    /** Starts the next segment. Only one recording can run at a time, so it waits on the last. */
+    fun startSegment() {
+        val f = File(dir, "seg-${System.nanoTime()}.mp4")
+        val done = CompletableDeferred<File>().also { finished = it }
+        recording = video.output.prepareRecording(context, FileOutputOptions.Builder(f).build())
+            .withAudioEnabled()
+            .start(ContextCompat.getMainExecutor(context)) { e -> if (e is VideoRecordEvent.Finalize) done.complete(f) }
+    }
+
+    /** Ends the current segment and starts the next; returns the finished one. */
+    suspend fun cutSegment(): File? {
+        val r = recording ?: return null
+        val done = finished
+        r.stop()
+        val f = done?.await()
+        startSegment()
+        return f
+    }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var micGranted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) }
@@ -110,17 +134,20 @@ internal fun LiveCameraView(
         }
     }
 
-    // Frames: a fresh fix and the hash of what's been recorded since the last one.
-    LaunchedEffect(recording, lap) {
-        if (recording == null || lap) return@LaunchedEffect
-        var offset = 0L
+    // Segments: every few seconds, cut one, and send it with a fresh fix (or, on the lap, just send it).
+    LaunchedEffect(recording != null) {
+        if (recording == null) return@LaunchedEffect
         while (true) {
             delay(FRAME_EVERY_MS)
-            val fix = runCatching { fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull() ?: continue
-            val (hash, end) = withContext(Dispatchers.IO) { hashFrom(file, offset) }
-            offset = end
-            Tracking.publish(fix.latitude, fix.longitude, fix.time, fix.accuracy.toDouble())
-            onFrame(LocationFix(GeoPoint(fix.latitude, fix.longitude), fix.time, fix.accuracy.toDouble()), hash)
+            val fix = runCatching { fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
+            val seg = cutSegment() ?: continue
+            val bytes = withContext(Dispatchers.IO) { seg.readBytes().also { seg.delete() } }
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            if (laps) { onLapSegment(hash, bytes); continue }
+            fix?.let { Tracking.publish(it.latitude, it.longitude, it.time, it.accuracy.toDouble()) }
+            val at = fix?.let { LocationFix(GeoPoint(it.latitude, it.longitude), it.time, it.accuracy.toDouble()) }
+                ?: Tracking.location.value?.copy(at = System.currentTimeMillis()) ?: continue
+            onFrame(at, hash, bytes)
         }
     }
 
@@ -137,9 +164,7 @@ internal fun LiveCameraView(
                             val preview = Preview.Builder().build().also { it.surfaceProvider = view.surfaceProvider }
                             provider.unbindAll()
                             provider.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, still, video)
-                            recording = video.output.prepareRecording(ctx, FileOutputOptions.Builder(file).build())
-                                .withAudioEnabled()
-                                .start(ContextCompat.getMainExecutor(ctx)) {}
+                            startSegment()
                         }, ContextCompat.getMainExecutor(ctx))
                     }
                 },
@@ -181,22 +206,4 @@ private suspend fun shoot(still: ImageCapture, out: File, fix: Location?, contex
         override fun onImageSaved(r: ImageCapture.OutputFileResults) = k.resume(true)
         override fun onError(e: ImageCaptureException) = k.resume(false)
     })
-}
-
-/** SHA-256 of [file] from [offset] to its current end, and that end. */
-private fun hashFrom(file: File, offset: Long): Pair<String, Long> {
-    val digest = MessageDigest.getInstance("SHA-256")
-    if (!file.exists()) return digest.digest().joinToString("") { "%02x".format(it) } to offset
-    RandomAccessFile(file, "r").use { f ->
-        val end = f.length()
-        f.seek(offset)
-        val buf = ByteArray(64 * 1024)
-        var left = end - offset
-        while (left > 0) {
-            val n = f.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
-            if (n < 0) break
-            digest.update(buf, 0, n); left -= n
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) } to end
-    }
 }

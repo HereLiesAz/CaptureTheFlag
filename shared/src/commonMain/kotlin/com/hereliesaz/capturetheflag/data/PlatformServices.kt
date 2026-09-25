@@ -18,12 +18,11 @@ interface PlatformServices {
     suspend fun takePhoto(): PhotoEvidence?
 
     /**
-     * The live camera for a capture or jailbreak stream. Records video with sound (a jailbreak's
-     * challenge is spoken) and calls [onFrame] every few seconds with a fresh fix and the SHA-256
-     * of the video written since the previous frame. Shows [challenge] once issued, and [status].
+     * The live camera for a capture or jailbreak stream. Records video with sound in segments of
+     * a few seconds and calls [onFrame] with a fresh fix, each segment's SHA-256, and the segment. Shows [challenge] once issued, and [status].
      * [finishLabel] names the button that takes the qualifying or winning frame, a still handed
      * to [onFinish] while recording carries on; null hides it. In [lap]
-     * mode (after the winning frame) no frames are sent: the stream is the player's own, and
+     * mode (after the winning frame) segments go to [onLapSegment] instead: the stream is the player's own, and
      * ending it hands [onFinish] null, as does abandoning a stream.
      */
     @Composable
@@ -32,10 +31,18 @@ interface PlatformServices {
         status: String,
         lap: Boolean,
         finishLabel: String?,
-        onFrame: suspend (LocationFix, String) -> Unit,
+        onFrame: suspend (LocationFix, String, ByteArray) -> Unit,
+        onLapSegment: suspend (String, ByteArray) -> Unit,
         onFinish: (PhotoEvidence?) -> Unit,
         modifier: Modifier,
     )
+
+    /** Plays a stream's segments one after another, picking up new ones as they're added. */
+    @Composable
+    fun StreamPlayer(urls: List<String>, modifier: Modifier)
+
+    /** The bytes of a photo or selfie this platform produced, by its reference. */
+    suspend fun readMedia(ref: String): ByteArray?
 
     /** Captures a selfie for registration. Returns a content URI, or null if cancelled. */
     suspend fun takeSelfie(): String?

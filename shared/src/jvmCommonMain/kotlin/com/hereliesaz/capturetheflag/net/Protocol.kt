@@ -35,6 +35,8 @@ object Kinds {
     const val TEAM_CHAT = 36001
     /** A player's profile: display name and selfie. */
     const val PROFILE = 0
+    /** A victory-lap segment's hash (tagged `s` stream, `g`, `c`): video for viewers, after the referees' footage. */
+    const val LAP = 35001
     const val RADIO = 35000
 }
 

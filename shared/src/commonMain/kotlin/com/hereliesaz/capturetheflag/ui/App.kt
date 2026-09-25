@@ -359,6 +359,7 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
     // One camera session: live, then the victory lap until the player ends it, whatever happens
     // to the game meanwhile.
     var session by remember { mutableStateOf<String?>(null) }
+    var watching by remember { mutableStateOf<String?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         val live = g.streams.values.firstOrNull { it.by == mine.id && it.open }
         if (live != null && session != live.id) session = live.id
@@ -377,7 +378,8 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 status = status,
                 lap = done != null,
                 finishLabel = if (live != null && live.qualifiedAt == null) "Winning frame" else null,
-                onFrame = { fix, chunk -> live?.let { backend.streamFrame(city, it.id, fix, chunk).let { v -> if (v is Verdict.Rejected) report(v) } } },
+                onFrame = { fix, chunk, bytes -> live?.let { backend.streamFrame(city, it.id, fix, chunk, bytes).let { v -> if (v is Verdict.Rejected) report(v) } } },
+                onLapSegment = { chunk, bytes -> session?.let { backend.lapSegment(city, it, chunk, bytes) } },
                 onFinish = { photo ->
                     if (photo == null) session = null
                     else live?.let { scope.launch { report(backend.endStream(city, it.id, photo)) } }
@@ -409,7 +411,13 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 } else g.jails[mine.team]?.let { Text("Jail placed at ${it.venueName}.") }
             }
             is GamePhase.Active -> if (mine.isJailed) JailPanel(g, mine, now) else {
-                StreamBoard(g, mine, now) { id, reason -> scope.launch { report(backend.dispute(city, id, reason)) } }
+                watching?.let { id ->
+                    val urls by backend.segments(city, id).collectAsState()
+                    if (urls.isEmpty()) Text("Waiting for the first segment…")
+                    else platform.StreamPlayer(urls, Modifier.fillMaxWidth().height(260.dp))
+                    OutlinedButton(onClick = { watching = null }) { Text("Stop watching") }
+                }
+                StreamBoard(g, mine, now, onWatch = { watching = it }) { id, reason -> scope.launch { report(backend.dispute(city, id, reason)) } }
                 g.jails[mine.team.opponent]?.let { Text("Enemy jail: ${it.venueName}, ${it.address}") }
                 val held = g.team(mine.team).count { it.isJailed && !it.disqualified }
                 fun goLive(purpose: StreamPurpose) = scope.launch {
@@ -719,11 +727,12 @@ private fun RadioTab(lines: List<Commentary>) {
  * enemy's live or awaiting (defenders may dispute), and the outcome of any under review.
  */
 @Composable
-private fun StreamBoard(g: Game, mine: Player, now: Millis, onDispute: (String, String) -> Unit) {
+private fun StreamBoard(g: Game, mine: Player, now: Millis, onWatch: (String) -> Unit, onDispute: (String, String) -> Unit) {
     val relevant = g.streams.values.filter { it.open || it.pending }
     for (s in relevant) {
         val who = g.players[s.by] ?: continue
         val what = if (s.purpose == StreamPurpose.CAPTURE) "flag run" else "jailbreak"
+        if (s.by != mine.id) OutlinedButton(onClick = { onWatch(s.id) }) { Text("Watch ${who.user.displayName}'s $what") }
         when {
             s.by == mine.id -> Text(
                 if (s.dispute != null) "Your $what is disputed. The referees' checks are running."

@@ -57,8 +57,18 @@ interface GameBackend {
      */
     suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix): Verdict
 
-    /** One frame of this player's live stream: fix, and the hash of the video written since the last frame. */
-    suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String): Verdict
+    /**
+     * One frame of this player's live stream: fix, and [segment], the video since the last
+     * frame, whose SHA-256 is [chunk]. The segment goes to the media store, for viewers now and
+     * the referees later.
+     */
+    suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String, segment: ByteArray? = null): Verdict
+
+    /** A segment of the victory lap, after the referees' footage has ended: for viewers only. */
+    suspend fun lapSegment(cityName: String, streamId: String, chunk: String, segment: ByteArray)
+
+    /** A stream's playable segments, oldest first: the footage, then the lap. Empty where nobody else can watch. */
+    fun segments(cityName: String, streamId: String): StateFlow<List<String>>
 
     /** The winning frame, said with the challenge. The referees' footage ends 30 s later; then the defenders may dispute. */
     suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence): Verdict

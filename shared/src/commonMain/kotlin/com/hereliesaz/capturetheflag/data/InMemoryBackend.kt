@@ -200,8 +200,12 @@ class InMemoryBackend(
     override suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix) =
         apply(cityName) { engine.goLive(it, myId(), "s-${random.nextLong().toULong().toString(36)}", purpose, fix, clock()) }
 
-    override suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String) =
+    override suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String, segment: ByteArray?) =
         apply(cityName) { engine.streamFrame(it, myId(), streamId, fix, chunk, clock()) }
+
+    // One phone, no audience: the video stays on the phone.
+    override suspend fun lapSegment(cityName: String, streamId: String, chunk: String, segment: ByteArray) {}
+    override fun segments(cityName: String, streamId: String): StateFlow<List<String>> = MutableStateFlow(emptyList())
 
     override suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence): Verdict {
         val stream = slot(cityName).value?.streams?.get(streamId)
