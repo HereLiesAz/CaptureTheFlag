@@ -154,6 +154,7 @@ class JailTest {
         assertTrue(started.game.p(prisoner.id).isJailed)
         assertTrue(started.awards.isEmpty())
         assertTrue(started.notices.single().contains(rescuer.user.displayName), "the city is told")
+        assertNotNull(started.game.streams.getValue("s1").challenge, "the challenge is shown at the start")
         // Too close: the approach has to be on camera.
         assertIs<Verdict.Rejected>(engine.goLive(g, rescuer.id, "s2", StreamPurpose.JAILBREAK, LocationFix(jail.north(10.0), t, 5.0), t).verdict)
     }

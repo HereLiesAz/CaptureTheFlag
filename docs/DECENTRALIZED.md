@@ -125,8 +125,8 @@ Photos are too big for events. Media is stored by nodes, content-addressed by SH
 Captures and jailbreaks are live streams, so most of the time nothing needs judging: the defenders and the city watched it happen. Referees rule only when a defender disputes.
 
 - **Live.** The streamer goes live at least 50 m out. Every few seconds the phone sends a `frame`: its fix, and the SHA-256 of the video written since the last frame. The hashes, signed as they happen, pin the video: it can't be swapped afterward.
-- **Challenge.** A random 10 to 60 seconds in, the engine issues two words the streamer must say on camera. They're drawn from randomness seeded by the batch's own contents, so nobody, streamer included, knows them early.
-- **Finish.** The stream ends on a still, checked like any photo. For a jailbreak, only after 15 minutes held on camera.
+- **Challenge.** The batch that takes the streamer live draws two words, shown at once and said at the start of the stream. The randomness is seeded by the batch's contents and its leader's millisecond clock, so nobody, streamer included, knows or steers them early.
+- **Winning frame.** A still from the stream with its sensor data, checked like any photo; for a flag run, only after walking up on camera, and for a jailbreak, only after 15 minutes held on camera. The referees' footage ends there. The stream itself can go on as long as the phone lasts: a victory lap, the player's own.
 - **Dispute window.** 10 minutes, for the defending team. Undisputed, it counts.
 - **Review.** Every referee on the panel runs `StreamJudge`, publishes a public vote, and seals its full report to every leader of both teams. The report lists every check: passed, failed, or not run and why. A majority of the panel decides.
 - **Appeal.** A ruling takes effect after a 10-minute appeal window. Each team's leaders may appeal once per round; the second review is final. A review with no majority after 30 minutes lets the stream stand, so a stalled panel can't hold a game hostage.

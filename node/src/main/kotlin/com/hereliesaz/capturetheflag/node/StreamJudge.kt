@@ -37,7 +37,7 @@ class StreamJudge(private val referee: String, private val matcher: PhotoMatcher
         val at = s.challengeAt ?: return Check("Challenge on camera", Result.FAIL, "No challenge was issued before the stream ended")
         val after = (s.endedAt ?: s.lastFrame.at) - at
         val ok = after >= GameRules.STREAM_CHALLENGE_ANSWER
-        return Check("Challenge on camera", if (ok) Result.PASS else Result.FAIL, "\"${s.challenge}\" issued ${after / 1000} s before the end; ${GameRules.STREAM_CHALLENGE_ANSWER / 1000} s needed")
+        return Check("Challenge on camera", if (ok) Result.PASS else Result.FAIL, "\"${s.challenge}\" shown at the start, ${after / 1000} s before the winning frame; ${GameRules.STREAM_CHALLENGE_ANSWER / 1000} s needed to say it")
     }
 
     /** The final still, checked again as at the finish: location, time, pose, facing, the reference photo's geometry. */

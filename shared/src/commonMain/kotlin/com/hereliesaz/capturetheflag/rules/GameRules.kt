@@ -73,10 +73,7 @@ object GameRules {
 
     /** A capture or jailbreak stream must start at least this far from its target, so the approach is on camera. */
     const val STREAM_APPROACH_M = 50.0
-    /** The challenge is issued at a random moment this long after going live. */
-    const val STREAM_CHALLENGE_MIN = 10_000L
-    const val STREAM_CHALLENGE_MAX = 60_000L
-    /** The stream must keep running at least this long after the challenge, so it's said on camera. */
+    /** The challenge is shown on going live; the stream must run at least this long after, so it's said on camera. */
     const val STREAM_CHALLENGE_ANSWER = 20_000L
     /** Frames further apart than this drop the stream. */
     const val STREAM_MAX_GAP = 20_000L

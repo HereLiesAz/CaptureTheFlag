@@ -66,7 +66,9 @@ import kotlin.coroutines.resume
 private const val FRAME_EVERY_MS = 5_000L
 
 /**
- * The live camera: preview, video with sound to a local file, and a still at the end.
+ * The live camera: preview, video with sound to a local file, and a still for the winning
+ * frame. Recording carries on past the winning frame into the victory lap ([lap]), when frames
+ * stop: the referees' footage ends at the win, and the rest is the player's.
  *
  * Every [FRAME_EVERY_MS] it takes a fresh fix and hashes the bytes the recorder has written
  * since the last frame. Those hashes, signed and sent as they happen, pin the video: whoever
@@ -78,6 +80,7 @@ internal fun LiveCameraView(
     services: AndroidPlatformServices,
     challenge: String?,
     status: String,
+    lap: Boolean,
     onFrame: suspend (LocationFix, String) -> Unit,
     onFinish: (com.hereliesaz.capturetheflag.model.PhotoEvidence?) -> Unit,
     modifier: Modifier,
@@ -107,8 +110,8 @@ internal fun LiveCameraView(
     }
 
     // Frames: a fresh fix and the hash of what's been recorded since the last one.
-    LaunchedEffect(recording) {
-        if (recording == null) return@LaunchedEffect
+    LaunchedEffect(recording, lap) {
+        if (recording == null || lap) return@LaunchedEffect
         var offset = 0L
         while (true) {
             delay(FRAME_EVERY_MS)
@@ -143,14 +146,19 @@ internal fun LiveCameraView(
             )
         }
         Column(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.55f)).padding(16.dp)) {
-            Text("● LIVE", color = Color.White, fontWeight = FontWeight.Bold)
-            Text(challenge?.let { "Say it on camera: \"$it\"" } ?: "Your challenge is coming. Keep walking.", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(if (lap) "● LIVE: VICTORY LAP" else "● LIVE", color = Color.White, fontWeight = FontWeight.Bold)
+            if (!lap) Text(
+                challenge?.let { "Say it on camera: \"$it\"" } ?: "Your challenge is on its way.",
+                color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+            )
             Text(status, color = Color.White)
             error?.let { Text(it, color = Color.White) }
         }
         Row(Modifier.align(Alignment.BottomCenter).padding(24.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(enabled = !busy, onClick = { recording?.stop(); recording = null; onFinish(null) }) { Text("Abandon", color = Color.White) }
-            Button(enabled = !busy && recording != null, onClick = {
+            OutlinedButton(enabled = !busy, onClick = { recording?.stop(); recording = null; onFinish(null) }) {
+                Text(if (lap) "End stream" else "Abandon", color = Color.White)
+            }
+            if (!lap) Button(enabled = !busy && recording != null, onClick = {
                 busy = true
                 scope.launch {
                     val fix = runCatching { fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
@@ -160,10 +168,11 @@ internal fun LiveCameraView(
                     if (!ok) { busy = false; error = "Couldn't take the still. Try again."; return@launch }
                     pose?.let { stampFacing(shot, it.azimuth) }
                     fix?.let { Tracking.publish(it.latitude, it.longitude, it.time, it.accuracy.toDouble()) }
-                    recording?.stop(); recording = null
+                    busy = false
+                    // Recording carries on: past the winning frame is the victory lap.
                     onFinish(services.evidence(shot, pose))
                 }
-            }) { Text("On target: finish") }
+            }) { Text("Winning frame") }
         }
     }
 }

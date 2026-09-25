@@ -15,15 +15,18 @@ interface PlatformServices {
     suspend fun takePhoto(): PhotoEvidence?
 
     /**
-     * The live camera for a capture or jailbreak stream. Records video with sound (the challenge
-     * is spoken) and calls [onFrame] every few seconds with a fresh fix and the SHA-256 of the
-     * video written since the previous frame. Shows [challenge] once issued, and [status].
-     * Finishing takes a still, handed to [onFinish]; backing out hands it null.
+     * The live camera for a capture or jailbreak stream. Records video with sound (a jailbreak's
+     * challenge is spoken) and calls [onFrame] every few seconds with a fresh fix and the SHA-256
+     * of the video written since the previous frame. Shows [challenge] once issued, and [status].
+     * The winning frame is a still, handed to [onFinish], and recording carries on. In [lap]
+     * mode (after the winning frame) no frames are sent: the stream is the player's own, and
+     * ending it hands [onFinish] null, as does abandoning a stream.
      */
     @Composable
     fun LiveCamera(
         challenge: String?,
         status: String,
+        lap: Boolean,
         onFrame: suspend (LocationFix, String) -> Unit,
         onFinish: (PhotoEvidence?) -> Unit,
         modifier: Modifier,

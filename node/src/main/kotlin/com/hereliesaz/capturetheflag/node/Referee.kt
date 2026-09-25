@@ -248,8 +248,9 @@ class Referee(
      * [deliver] (the proposer only) also sends pings, commitments, the reveal and the radio.
      */
     private suspend fun apply(r: Round, b: Batch, events: List<Event>, live: Boolean, deliver: Boolean) {
-        // Seeded by the batch's own contents too: a challenge drawn here can't be known before the batch exists.
-        val batchSeed = Nostr.sha256(r.seed!! + b.seq.bytes() + Nostr.sha256(b.events.joinToString(",").toByteArray()))
+        // Seeded by the batch's contents and its leader's millisecond clock too: a challenge drawn here
+        // can't be known, or steered by crafting one's own event, before the batch exists.
+        val batchSeed = Nostr.sha256(r.seed!! + b.seq.bytes() + b.at.bytes() + Nostr.sha256(b.events.joinToString(",").toByteArray()))
         val engine = GameEngine(Random(batchSeed.long()), levelOf = { id -> Leaderboard.levelOf(ledger, id) }, isRookie = { id -> ledger.none { it.user == id } })
         val before = r.game!!
         var total = engine.tick(before, b.at)

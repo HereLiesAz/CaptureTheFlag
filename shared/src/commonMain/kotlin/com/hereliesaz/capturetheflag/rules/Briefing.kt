@@ -69,14 +69,18 @@ object Briefing {
         game.streams.values.any { it.by == me.id && it.open } -> buildList {
             val s = game.streams.values.first { it.by == me.id && it.open }
             add("You are live. Keep the camera running: a gap over ${GameRules.STREAM_MAX_GAP / 1000} seconds voids the stream.")
-            add("When the challenge appears, say it on camera, and keep streaming at least ${GameRules.STREAM_CHALLENGE_ANSWER / 1000} seconds after.")
-            if (s.purpose == StreamPurpose.CAPTURE) add("Get the enemy flag in frame, from where their leader photographed it, and finish.")
-            else add("Stay within ${GameRules.JAIL_REPORT_RADIUS_M.toInt()} m of the jail for ${GameRules.JAILBREAK_HOLD / MIN} minutes on camera. Leave and it is over.")
+            s.challenge?.let { add("Say your challenge on camera now: \"$it\".") }
+            if (s.purpose == StreamPurpose.CAPTURE) {
+                add("Walk up to the enemy flag and frame it from where their leader photographed it. That frame wins.")
+            } else {
+                add("Stay within ${GameRules.JAIL_REPORT_RADIUS_M.toInt()} m of the jail for ${GameRules.JAILBREAK_HOLD / MIN} minutes on camera, then take the winning frame. Leave and it is over.")
+            }
+            add("After the winning frame, keep streaming as long as you like. The referees' footage stops there; the rest is yours.")
             add("You can be tagged while you stream. Jailed mid-stream, it's void.")
         }
         game.streams.values.any { it.by == me.id && it.pending } -> listOf(
             "Your stream is in. The defenders have ${GameRules.STREAM_CONTEST_WINDOW / MIN} minutes to dispute it; undisputed, it counts.",
-            "A dispute goes to the referees' automated checks: GPS, timing and sensors all the way through, the challenge heard on the audio, and the target matched against the leader's registration photo.",
+            "A dispute goes to the referees' automated checks: GPS, timing and sensors all the way through, the challenge heard at the start, and the target matched against the leader's registration photo.",
         )
         standingIn == me.team.opponent -> buildList {
             val inc = game.incursions[me.id]

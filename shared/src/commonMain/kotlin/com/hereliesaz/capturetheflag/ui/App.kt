@@ -321,7 +321,34 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
     fun report(v: Verdict) { result = when (v) { Verdict.Valid -> "Confirmed."; is Verdict.Rejected -> v.reason } }
 
     if (mine == null) return Text("Not playing this round.")
+    // After the winning frame the camera stays up, whatever happens to the game: the victory lap.
+    var lapping by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        val live = g.streams.values.firstOrNull { it.by == mine.id && it.open }
+        if (live != null || lapping) {
+            val status = when {
+                live == null -> "Your footage for the referees ended at the winning frame. Stream as long as you like."
+                live.purpose == StreamPurpose.CAPTURE -> "Say the challenge, walk up to the enemy flag, and frame it from where their leader stood. That frame wins."
+                live.arrivedAt == null -> "Walk into the enemy jail. Leave once you're there and it's over."
+                else -> "Hold the jail on camera: ${countdown(live.arrivedAt + GameRules.JAILBREAK_HOLD - now)} to go."
+            }
+            platform.LiveCamera(
+                challenge = live?.challenge,
+                status = status,
+                lap = live == null,
+                onFrame = { fix, chunk -> live?.let { backend.streamFrame(city, it.id, fix, chunk).let { v -> if (v is Verdict.Rejected) report(v) } } },
+                onFinish = { photo ->
+                    if (live == null || photo == null) lapping = false
+                    else {
+                        // Stay on camera through the switch to the lap; drop back if the frame didn't win.
+                        lapping = true
+                        scope.launch { backend.endStream(city, live.id, photo).also { if (it is Verdict.Rejected) lapping = false }.let(::report) }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(520.dp),
+            )
+            return@Column
+        }
         when (g.phase) {
             is GamePhase.FlagPlacement -> {
                 if (mine.role == Role.CAPTAIN) CoCaptainPicker(g, mine) { picks ->
@@ -345,22 +372,6 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 } else g.jails[mine.team]?.let { Text("Jail placed at ${it.venueName}.") }
             }
             is GamePhase.Active -> if (mine.isJailed) JailPanel(g, mine, now) else {
-                val live = g.streams.values.firstOrNull { it.by == mine.id && it.open }
-                if (live != null) {
-                    val status = when {
-                        live.purpose == StreamPurpose.CAPTURE -> "Get the enemy flag in frame, say the challenge, then finish."
-                        live.arrivedAt == null -> "Walk into the enemy jail. Leave once you're there and it's over."
-                        else -> "Hold the jail on camera: ${countdown(live.arrivedAt + GameRules.JAILBREAK_HOLD - now)} to go."
-                    }
-                    platform.LiveCamera(
-                        challenge = live.challenge,
-                        status = status,
-                        onFrame = { fix, chunk -> backend.streamFrame(city, live.id, fix, chunk).let { if (it is Verdict.Rejected) report(it) } },
-                        onFinish = { photo -> photo?.let { scope.launch { report(backend.endStream(city, live.id, it)) } } },
-                        modifier = Modifier.fillMaxWidth().height(520.dp),
-                    )
-                    return@Column
-                }
                 StreamBoard(g, mine, now) { id, reason -> scope.launch { report(backend.dispute(city, id, reason)) } }
                 g.jails[mine.team.opponent]?.let { Text("Enemy jail: ${it.venueName}, ${it.address}") }
                 val held = g.team(mine.team).count { it.isJailed && !it.disqualified }

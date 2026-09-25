@@ -186,6 +186,18 @@ class RulesTest {
         assertTrue(twice.awards.isEmpty())
     }
 
+    @Test fun aFlagRunHasToWalkUpOnCamera() {
+        val g = activeGame()
+        val p = g.players.values.first()
+        val flag = g.flags.getValue(p.team.opponent).location
+        val t = DAY + 20 * MINUTE
+        var tr = engine.goLive(g, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(flag.north(60.0), t, 5.0), t)
+        // Standing still 60 m out, then a still "at the flag": the frames say otherwise.
+        for (i in 1..6) tr += engine.streamFrame(tr.game, p.id, "s1", LocationFix(flag.north(60.0), t + i * FRAME_MS, 5.0), "c$i", t + i * FRAME_MS)
+        val end = t + 6 * FRAME_MS
+        assertEquals("Walk up to the flag on camera first", (engine.endStream(tr.game, p.id, "s1", photo(flag, end), end).verdict as Verdict.Rejected).reason)
+    }
+
     @Test fun aCaptureInReviewHoldsTheFinalWhistle() {
         val g = activeGame()
         val p = g.players.values.first()

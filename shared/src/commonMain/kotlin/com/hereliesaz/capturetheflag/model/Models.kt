@@ -244,11 +244,11 @@ data class Game(
 enum class StreamPurpose { CAPTURE, JAILBREAK }
 
 /**
- * A capture or jailbreak, streamed live to the defenders and the city. The phone sends a frame
- * every few seconds: its fix, its pose, and the hash of the video written since the last frame,
- * so the video can't be swapped afterward. Partway through, the referees issue a [challenge]
- * the streamer must say on camera. Once [endedAt], defenders have until [contestUntil] to
- * dispute; undisputed, it counts.
+ * A capture or jailbreak, streamed live to the city. The phone sends a frame every few
+ * seconds: its fix and the hash of the video written since the last frame, so the video can't
+ * be swapped afterward. The streamer says the [challenge] at the start. [endedAt]
+ * is the winning frame, where the referees' footage ends (the stream itself may go on as a
+ * victory lap). Defenders then have until [contestUntil] to dispute; undisputed, it counts.
  */
 data class LiveStream(
     val id: String,
@@ -258,8 +258,7 @@ data class LiveStream(
     val startedAt: Millis,
     val lastFrame: LocationFix,
     val chunks: List<String> = emptyList(),
-    /** When the challenge will be issued. Unknown to the streamer: drawn from the batch it went live in. */
-    val challengeDueAt: Millis,
+    /** Two words said at the start of the stream, drawn from the batch it went live in: nobody knew them before. */
     val challenge: String? = null,
     val challengeAt: Millis? = null,
     /** Jailbreak: first frame inside the jail radius. */
