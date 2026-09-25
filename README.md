@@ -168,6 +168,20 @@ Held live, paid at the final whistle, shown in the Status tab and called on the 
 
 Each list shows the top three. Making a list is what makes a round memorable: at the whistle the engine logs who made which list, and in later rounds the booth may only air a player's antics from rounds where they made one, and a rivalry only from rounds where both did.
 
+## Running a node
+
+A node is a Nostr relay, referee and city surveyor in one (`node/`, design in `docs/DECENTRALIZED.md`). It is the prototype of the decentralized server: one machine that stays on.
+
+~~~
+PORT=7447 DATA_DIR=./node-data ./gradlew :node:run
+# with a private GitHub repo clone as the shared archive
+PORT=7447 DATA_DIR=./node-data ARCHIVE=/path/to/repo-clone ./gradlew :node:run
+# or a gated Google Drive folder kept in sync by Drive for desktop / rclone
+PORT=7447 DATA_DIR=./node-data ARCHIVE=~/GoogleDrive/ctf-archive ARCHIVE_SYNC=external ./gradlew :node:run
+~~~
+
+`DATA_DIR/node.key` is the node's identity. Back it up. It is also its reputation.
+
 ## Structure
 
 ~~~
@@ -179,6 +193,8 @@ shared/   Compose Multiplatform (android + jvm). Rules, engine, chat, UI. No pla
   commonMain/.../ui         Screens
   commonTest                Rules tests (run: gradle :shared:jvmTest)
 app/      Android: camera + EXIF, fused location foreground service, BLE proximity
+node/     Decentralized node: Nostr relay, referee, surveyor, archive
+docs/     Design documents
 ~~~
 
 The engine is meant to run on the server, authoritatively. Clients only render.

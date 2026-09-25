@@ -1,0 +1,96 @@
+package com.hereliesaz.capturetheflag.node
+
+import com.hereliesaz.capturetheflag.geo.GeoPoint
+import com.hereliesaz.capturetheflag.model.BleSighting
+import com.hereliesaz.capturetheflag.model.DevicePose
+import com.hereliesaz.capturetheflag.model.FlagVenueKind
+import com.hereliesaz.capturetheflag.model.LocationFix
+import com.hereliesaz.capturetheflag.model.PhotoEvidence
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/** Event kinds from docs/DECENTRALIZED.md. */
+object Kinds {
+    const val CITY_SURVEY = 31000
+    const val GAME_OPEN = 32000
+    const val SEED_REVEAL = 32001
+    const val ACTION = 33000
+    const val POSITION = 33001
+    const val BLE_KEY = 33003
+    const val BATCH = 34000
+    const val OUTCOME = 34001
+    const val PING = 34002
+    const val RADIO = 35000
+}
+
+/**
+ * What a player asks for, as the content of a kind-33000 event tagged `["g", gameId]`
+ * (or `["c", city]` for [Open]). The signer's public key is the player id.
+ */
+@Serializable
+sealed interface Action {
+    @Serializable @SerialName("open") data class Open(val city: String) : Action
+    @Serializable @SerialName("join") data class Join(val name: String, val selfie: String) : Action
+    @Serializable @SerialName("coCaptains") data class CoCaptains(val picks: Set<String>) : Action
+    @Serializable @SerialName("placeFlag") data class PlaceFlag(
+        val venue: String, val kind: FlagVenueKind, val address: String, val lat: Double, val lng: Double, val photo: Evidence,
+    ) : Action
+    @Serializable @SerialName("placeJail") data class PlaceJail(
+        val venue: String, val address: String, val lat: Double, val lng: Double, val photo: Evidence,
+    ) : Action
+    @Serializable @SerialName("capture") data class Capture(val photo: Evidence) : Action
+    @Serializable @SerialName("jailbreak") data class Jailbreak(val photo: Evidence) : Action
+    @Serializable @SerialName("tag") data class Tag(val target: String, val photo: Evidence) : Action
+    @Serializable @SerialName("decoy") data class Decoy(val lat: Double, val lng: Double) : Action
+    @Serializable @SerialName("vanish") data object Vanish : Action
+    @Serializable @SerialName("interrogate") data class Interrogate(val subject: String) : Action
+    @Serializable @SerialName("bounty") data class Bounty(val target: String) : Action
+}
+
+/** A position report, content of kind 33001. Prototype: plaintext. Design: NIP-44 to the referees. */
+@Serializable
+data class Position(val lat: Double, val lng: Double, val at: Long, val accuracy: Double) {
+    fun fix() = LocationFix(GeoPoint(lat, lng), at, accuracy)
+}
+
+/** Wire form of [PhotoEvidence]. */
+@Serializable
+data class Evidence(
+    val image: String,
+    val lat: Double? = null,
+    val lng: Double? = null,
+    val takenAt: Long? = null,
+    val fix: Position? = null,
+    val direction: Double? = null,
+    val pose: Pose? = null,
+    val ble: List<Sighting> = emptyList(),
+) {
+    @Serializable data class Pose(val azimuth: Double, val pitch: Double, val roll: Double, val at: Long)
+    @Serializable data class Sighting(val token: String, val at: Long, val rssi: Int)
+
+    fun toModel() = PhotoEvidence(
+        imageUri = image,
+        exifLocation = if (lat != null && lng != null) GeoPoint(lat, lng) else null,
+        exifTakenAt = takenAt,
+        deviceFix = fix?.fix(),
+        bleSightings = ble.map { BleSighting(it.token, it.at, it.rssi) },
+        exifDirection = direction,
+        pose = pose?.let { DevicePose(it.azimuth, it.pitch, it.roll, it.at) },
+    )
+}
+
+/** Content of a kind-34000 batch: the canonical order of player events for one game. */
+@Serializable
+data class Batch(val seq: Long, val at: Long, val events: List<String>)
+
+/** Content of a kind-34001 outcome: the public result of one batch. */
+@Serializable
+data class Outcome(
+    val seq: Long,
+    val verdicts: Map<String, String>,
+    val awards: List<AwardDto>,
+    val notices: List<String>,
+    val phase: String,
+) {
+    @Serializable data class AwardDto(val user: String, val points: Long, val reason: String)
+}
