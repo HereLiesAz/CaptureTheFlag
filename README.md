@@ -27,7 +27,7 @@ Jail is conceptual, but the report is not.
 2. **Report.** Stand within 40 m of the jail for 5 unbroken minutes before the deadline. Stepping away restarts the clock. After that they may leave.
 3. **Frozen.** From the tag until release, a prisoner earns no points and cannot capture, tag, or break anyone out.
 4. **Disqualified.** Miss the deadline and they are out for the round: still frozen, never freed, and every point they earned this round is taken back.
-5. **Jailbreak.** A free teammate photographs the enemy jail (40 m, same checks as a flag capture). Every jailed teammate who is not disqualified goes free, reported or still en route. The rescuer earns 20 per player freed.
+5. **Jailbreak.** A free teammate photographs the enemy jail (40 m, same checks as a flag capture), then holds it: 15 unbroken minutes within 40 m. Leaving, or being jailed, ends the attempt. They are on enemy ground the whole time, so their incursion pings keep running. When the hold completes, every jailed teammate who is not disqualified goes free, reported or still en route. The rescuer earns 20 per player freed.
 6. **Parole** (perk) only applies once the prisoner has reported.
 7. **Final whistle.** The freeze lifts at the end of the round, so reported prisoners share in the win or tie. The disqualified do not.
 

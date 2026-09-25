@@ -199,7 +199,8 @@ class GameEngine(
             }
         }
         g = g.copy(trails = trails)
-        return (Transition(g, pings = pings, awards = mentored(g, awards)) + duePings(g, fix.at)).settled()
+        val held = holdBreakout(g, g.players.getValue(player), fix)
+        return (held + Transition(held.game, pings = pings, awards = mentored(held.game, awards)) + duePings(held.game, fix.at)).settled()
     }
 
     /**
@@ -472,7 +473,7 @@ class GameEngine(
         )
         val g = game.copy(
             players = game.players + (target to victim.copy(
-                jailedAt = now, jailDeadline = now + reportWindowMs, reportingSince = null, reportedAt = null,
+                jailedAt = now, jailDeadline = now + reportWindowMs, reportingSince = null, reportedAt = null, breakoutSince = null,
             )),
             incursions = game.incursions - target,
             vanishPending = game.vanishPending - target,
@@ -503,21 +504,36 @@ class GameEngine(
     }
 
     /**
-     * Jailbreak: a free player photographs the enemy jail and every teammate held there
-     * (reported or still en route, never the disqualified) walks free.
+     * Starts a jailbreak: a free player photographs the enemy jail, then must stay within range
+     * of it for [GameRules.JAILBREAK_HOLD] unbroken. Leaving, or being jailed, ends the attempt.
+     * On completion every teammate held (reported or en route, never the disqualified) walks free.
      */
     fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
         val v = Verification.jailbreak(game, by, photo, now)
         if (v != Verdict.Valid) return Transition(game, v)
         val rescuer = game.players.getValue(by)
-        val freed = game.team(rescuer.team).filter { it.isJailed && !it.disqualified }
-        if (freed.isEmpty()) return game.reject("No one to free")
+        if (rescuer.breakoutSince != null) return game.reject("Jailbreak already under way")
+        if (game.team(rescuer.team).none { it.isJailed && !it.disqualified }) return game.reject("No one to free")
+        return Transition(game.copy(players = game.players + (by to rescuer.copy(breakoutSince = now))))
+    }
+
+    /** A rescuer's fix: still at the jail keeps the attempt alive; the full hold springs everyone. */
+    private fun holdBreakout(game: Game, rescuer: Player, fix: LocationFix): Transition {
+        val since = rescuer.breakoutSince ?: return Transition(game)
+        val jail = game.jails[rescuer.team.opponent]
+        val there = jail != null && fix.accuracyM <= GameRules.MAX_FIX_ACCURACY_M &&
+            fix.point.distanceTo(jail.location) <= GameRules.JAIL_REPORT_RADIUS_M
+        if (!there) return Transition(game.copy(players = game.players + (rescuer.id to rescuer.copy(breakoutSince = null))))
+        if (fix.at - since < GameRules.JAILBREAK_HOLD) return Transition(game)
+        val done = game.copy(players = game.players + (rescuer.id to rescuer.copy(breakoutSince = null)))
+        val freed = done.team(rescuer.team).filter { it.isJailed && !it.disqualified }
+        if (freed.isEmpty()) return Transition(done)
         return Transition(
-            game.copy(players = game.players + freed.associate { it.id to it.freed() }),
-            awards = listOf(game.award(by, Points.JAILBREAK_PER_FREED.toLong() * freed.size, "Freed ${freed.size}", now)),
+            done.copy(players = done.players + freed.associate { it.id to it.freed() }),
+            awards = listOf(done.award(rescuer.id, Points.JAILBREAK_PER_FREED.toLong() * freed.size, "Freed ${freed.size}", fix.at)),
             notices = listOf("${rescuer.user.displayName} broke ${freed.size} out of jail."),
-        ).settled()
+        )
     }
 
     private fun Player.freed() = copy(jailedAt = null, jailDeadline = null, reportingSince = null, reportedAt = null)

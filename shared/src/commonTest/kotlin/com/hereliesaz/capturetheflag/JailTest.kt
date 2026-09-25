@@ -143,16 +143,57 @@ class JailTest {
         assertIs<Verdict.Rejected>(engine.tag(g, prisoner.id, someone.id, photo(home(prisoner.team), t), t, ble).verdict)
     }
 
-    @Test fun jailbreakFreesEveryoneAndPaysTheRescuer() {
+    @Test fun aPhotoAloneFreesNoOne() {
         val (g, prisoner, _) = jailOne()
         val rescuer = g.team(prisoner.team).first { it.id != prisoner.id }
         val jail = g.jails.getValue(prisoner.team.opponent).location
         val t = DAY + 30 * MINUTE
-        val tr = engine.jailbreak(g, rescuer.id, photo(jail, t), t)
-        assertEquals(Verdict.Valid, tr.verdict)
-        assertTrue(!tr.game.p(prisoner.id).isJailed)
-        assertEquals(20L, tr.awards.single().points)
-        assertIs<Verdict.Rejected>(engine.jailbreak(tr.game, rescuer.id, photo(jail, t), t).verdict)
+        val started = engine.jailbreak(g, rescuer.id, photo(jail, t), t)
+        assertEquals(Verdict.Valid, started.verdict)
+        assertTrue(started.game.p(prisoner.id).isJailed)
+        assertEquals(t, started.game.p(rescuer.id).breakoutSince)
+        assertTrue(started.awards.isEmpty())
+    }
+
+    @Test fun holdingTheJailFifteenMinutesFreesEveryone() {
+        val (g0, prisoner, _) = jailOne()
+        val rescuer = g0.team(prisoner.team).first { it.id != prisoner.id }
+        val jail = g0.jails.getValue(prisoner.team.opponent).location
+        val t = DAY + 30 * MINUTE
+        var g = engine.jailbreak(g0, rescuer.id, photo(jail, t), t).game
+        g = engine.reportLocation(g, rescuer.id, LocationFix(jail, t + 14 * MINUTE, 5.0)).game
+        assertTrue(g.p(prisoner.id).isJailed)
+        val done = engine.reportLocation(g, rescuer.id, LocationFix(jail, t + 15 * MINUTE, 5.0))
+        assertTrue(!done.game.p(prisoner.id).isJailed)
+        assertNull(done.game.p(rescuer.id).breakoutSince)
+        assertEquals(20L, done.awards.single { it.reason.startsWith("Freed") }.points)
+        assertEquals(1, done.notices.size)
+    }
+
+    @Test fun leavingTheJailAbandonsTheBreakout() {
+        val (g0, prisoner, _) = jailOne()
+        val rescuer = g0.team(prisoner.team).first { it.id != prisoner.id }
+        val jail = g0.jails.getValue(prisoner.team.opponent).location
+        val t = DAY + 30 * MINUTE
+        var g = engine.jailbreak(g0, rescuer.id, photo(jail, t), t).game
+        g = engine.reportLocation(g, rescuer.id, LocationFix(GeoPoint(jail.lat + 0.01, jail.lng), t + 10 * MINUTE, 5.0)).game
+        assertNull(g.p(rescuer.id).breakoutSince)
+        g = engine.reportLocation(g, rescuer.id, LocationFix(jail, t + 16 * MINUTE, 5.0)).game
+        assertTrue(g.p(prisoner.id).isJailed)
+    }
+
+    @Test fun jailingTheRescuerEndsTheBreakout() {
+        val (g0, prisoner, jailer) = jailOne()
+        val rescuer = g0.team(prisoner.team).first { it.id != prisoner.id }
+        val jail = g0.jails.getValue(prisoner.team.opponent).location
+        val t = DAY + 30 * MINUTE
+        var g = engine.jailbreak(g0, rescuer.id, photo(jail, t), t).game
+        g = engine.reportLocation(g, rescuer.id, LocationFix(jail, t + MINUTE, 5.0)).game
+        val ble = BleTokenRegistry { tok, _ -> if (tok == "r") rescuer.id else null }
+        val tagged = engine.tag(g, jailer.id, rescuer.id, photo(jail, t + MINUTE, listOf(BleSighting("r", t + MINUTE, -40))), t + MINUTE, ble)
+        assertEquals(Verdict.Valid, tagged.verdict)
+        assertNull(tagged.game.p(rescuer.id).breakoutSince)
+        assertTrue(tagged.game.p(prisoner.id).isJailed)
     }
 
     @Test fun paroleOnlyAfterReporting() {

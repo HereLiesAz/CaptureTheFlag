@@ -280,9 +280,12 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
             is GamePhase.Active -> if (mine.isJailed) JailPanel(g, mine, now) else {
                 g.jails[mine.team.opponent]?.let { Text("Enemy jail: ${it.venueName}, ${it.address}") }
                 val held = g.team(mine.team).count { it.isJailed && !it.disqualified }
-                if (held > 0) Button(onClick = {
+                mine.breakoutSince?.let {
+                    Text("BREAKING OUT: hold the jail ${countdown(it + GameRules.JAILBREAK_HOLD - now)} more. Leave and it's over.", fontWeight = FontWeight.Bold)
+                }
+                if (held > 0 && mine.breakoutSince == null) Button(onClick = {
                     scope.launch { platform.takePhoto()?.let { report(backend.jailbreak(city, it)) } }
-                }) { Text("Photograph enemy jail: free $held") }
+                }) { Text("Start jailbreak: photograph enemy jail, then hold ${GameRules.JAILBREAK_HOLD / GameRules.MINUTE} min ($held held)") }
                 val decoysLeft = Progression.perksFor(mine.level).decoysPerGame - (g.decoysUsed[mine.id] ?: 0)
                 if (decoysLeft > 0) OutlinedButton(enabled = !mine.isJailed, onClick = {
                     scope.launch {

@@ -50,6 +50,8 @@ object GameRules {
     /** Slack on the travel estimate, then a flat buffer on top. */
     const val JAIL_TRAVEL_SLACK = 1.25
     const val JAIL_TRAVEL_BUFFER = 10 * MINUTE
+    /** A rescuer must hold the enemy jail this long, unbroken, to free their team. */
+    const val JAILBREAK_HOLD = 15 * MINUTE
 
     /** Rotation period for BLE advertisement tokens. */
     const val BLE_TOKEN_ROTATION = 15 * MINUTE

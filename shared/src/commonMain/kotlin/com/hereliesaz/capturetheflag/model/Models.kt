@@ -73,6 +73,8 @@ data class Player(
     val reportedAt: Millis? = null,
     /** Failed to report: out for the round, no points from it. Stays jailed. */
     val disqualified: Boolean = false,
+    /** A jailbreak in progress: unbroken presence at the enemy jail since this time. */
+    val breakoutSince: Millis? = null,
     /** Level snapshotted when teams are dealt; fixed for the round. */
     val level: Int = 1,
 ) {
