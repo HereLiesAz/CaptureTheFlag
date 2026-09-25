@@ -422,6 +422,20 @@ class NodeTest {
         assertEquals(400, http.put("/media/$sha") { header("Authorization", Media.auth(me, sha)); setBody(segment) }.status.value)
     }
 
+    /**
+     * Real speech recognition, when this machine has it: set VOSK_MODEL to a Vosk model directory
+     * and SPOKEN_SEGMENT to a video whose audio says "amber lantern". Otherwise there's nothing to run.
+     */
+    @Test fun voskHearsTheChallenge() = runTest {
+        val model = System.getenv("VOSK_MODEL")?.let(::File)?.takeIf { it.isDirectory } ?: return@runTest println("skipped: no VOSK_MODEL")
+        val segment = System.getenv("SPOKEN_SEGMENT")?.let(::File)?.takeIf { it.exists() } ?: return@runTest println("skipped: no SPOKEN_SEGMENT")
+        val ears = VoskEars(model)
+        val right = ears.heard(listOf(segment.readBytes()), listOf("amber", "lantern"))!!
+        assertTrue(right.said, "heard: ${right.transcript}")
+        val wrong = ears.heard(listOf(segment.readBytes()), listOf("walnut", "zebra"))!!
+        assertFalse(wrong.said, "heard: ${wrong.transcript}")
+    }
+
     @Test fun nip44MatchesTheOfficialVectors() {
         // github.com/paulmillr/nip44 nip44.vectors.json
         val v = Nostr.json.parseToJsonElement(javaClass.getResource("/nip44.vectors.json")!!.readText()).jsonObject["v2"]!!.jsonObject
