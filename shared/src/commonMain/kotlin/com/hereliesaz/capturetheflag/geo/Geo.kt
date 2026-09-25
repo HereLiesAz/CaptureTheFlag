@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag.geo
 
+import kotlinx.serialization.Serializable
 import kotlin.math.PI
 import kotlin.math.asin
 import kotlin.math.cos
@@ -7,6 +8,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /** WGS-84 coordinate. */
+@Serializable
 data class GeoPoint(val lat: Double, val lng: Double)
 
 private const val EARTH_RADIUS_M = 6_371_008.8
@@ -37,6 +39,7 @@ fun headingDelta(a: Double, b: Double): Double {
 }
 
 /** Closed ring of vertices; the last vertex implicitly joins the first. */
+@Serializable
 data class Polygon(val ring: List<GeoPoint>) {
     init { require(ring.size >= 3) { "Polygon needs at least 3 vertices" } }
 
@@ -61,6 +64,7 @@ data class Polygon(val ring: List<GeoPoint>) {
  * [sideOf] returns +1 or -1; points exactly on the line resolve to +1.
  * Uses a local equirectangular projection, which is accurate at city scale.
  */
+@Serializable
 data class DividingLine(val pivot: GeoPoint, val bearingDeg: Double) {
     fun sideOf(p: GeoPoint): Int {
         val dx = (p.lng - pivot.lng) * cos(pivot.lat.rad())

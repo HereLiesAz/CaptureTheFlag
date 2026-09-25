@@ -15,6 +15,7 @@ import com.hereliesaz.capturetheflag.model.User
 import com.hereliesaz.capturetheflag.rules.BleTokenRegistry
 import com.hereliesaz.capturetheflag.rules.CityPartitioner
 import com.hereliesaz.capturetheflag.rules.GameRules
+import com.hereliesaz.capturetheflag.rules.GameView
 import com.hereliesaz.capturetheflag.rules.Leaderboard
 import com.hereliesaz.capturetheflag.rules.Verdict
 import kotlinx.coroutines.sync.Mutex
@@ -286,6 +287,12 @@ class Referee(
         if (before.phase !is GamePhase.Ended && total.game.phase is GamePhase.Ended) {
             publish(Kinds.REVEAL, Nostr.json.encodeToString(Reveal.serializer(), Reveal(r.secrets.toList())), r.id)
         }
+        // Everyone's view of where things stand: sealed to each player, and one in the clear for onlookers.
+        val viewers = total.game.players.keys + total.game.signups.map { it.id }
+        // Tagged with the batch sequence: a phone keeps the view with the highest one.
+        val seq = listOf("s", b.seq.toString())
+        for (who in viewers) publish(Kinds.VIEW, Nip44.seal(Views.encode(GameView.of(total.game, who)), keys, who), r.id, listOf(listOf("p", who), seq))
+        publish(Kinds.PUBLIC_VIEW, Views.encode(GameView.of(total.game, null)), r.id, listOf(listOf("c", r.city), seq))
         booth.narrate(before, total.game, total.awards, total.notices, b.at, r.lastLook, total.highlights).forEach {
             publish(Kinds.RADIO, it.text, r.id, listOf(listOf("c", r.city)))
         }

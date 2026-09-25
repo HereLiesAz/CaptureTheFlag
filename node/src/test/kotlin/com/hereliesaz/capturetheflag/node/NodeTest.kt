@@ -273,6 +273,16 @@ class NodeTest {
         }
         assertIs<GamePhase.Active>(g().phase)
 
+        // Each player's view: their own flag, never the enemy's; onlookers see neither.
+        val someone = g().players.values.first()
+        val sealed = net.store.query(listOf(Filter(kinds = setOf(Kinds.VIEW), tags = mapOf("p" to setOf(someone.id))))).last()
+        val view = Views.decode(Nip44.open(sealed.content, keyOf.getValue(someone.id), sealed.pubkey))
+        assertEquals(setOf(someone.team), view.flags.keys)
+        assertEquals(setOf(someone.id), view.lastFix.keys + someone.id)
+        val public = Views.decode(net.store.query(listOf(Filter(kinds = setOf(Kinds.PUBLIC_VIEW)))).last().content)
+        assertTrue(public.flags.isEmpty() && public.lastFix.isEmpty())
+        assertEquals(2, public.jails.size, "jails are public")
+
         // A flag run: live 60 m out, walk in, the winning frame with the challenge, frames until the footage closes.
         val runner = g().players.values.first { !it.isLeader }
         val target = g().flags.getValue(runner.team.opponent).location

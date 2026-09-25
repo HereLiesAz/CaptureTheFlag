@@ -27,6 +27,8 @@ object Kinds {
     const val REVEAL = 34004
     const val RULING = 34005
     const val REPORT = 34006
+    const val VIEW = 34007
+    const val PUBLIC_VIEW = 34008
     const val RADIO = 35000
 }
 
@@ -171,4 +173,16 @@ object Reviews {
             val findings = reports.mapNotNull { r -> r.checks.firstOrNull { it.name == name }?.let { r.referee to it } }.toMap()
             if (findings.values.map { it.result }.distinct().size > 1 || findings.size < reports.size) Discrepancy(name, findings) else null
         }
+}
+
+/**
+ * Game views: [com.hereliesaz.capturetheflag.rules.GameView] as JSON. Kind 34007 is one
+ * player's view, NIP-44 to them (tagged `p`); kind 34008 is the onlookers' view, in the clear
+ * (tagged `c` with the city). Both are sent by the batch's proposer after every batch, tagged
+ * `s` with the batch sequence: the newest view is the one with the highest.
+ */
+object Views {
+    val json = kotlinx.serialization.json.Json(Nostr.json) { allowStructuredMapKeys = true }
+    fun encode(g: com.hereliesaz.capturetheflag.model.Game) = json.encodeToString(com.hereliesaz.capturetheflag.model.Game.serializer(), g)
+    fun decode(s: String) = json.decodeFromString(com.hereliesaz.capturetheflag.model.Game.serializer(), s)
 }

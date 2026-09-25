@@ -31,6 +31,8 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import com.hereliesaz.capturetheflag.rules.GameView
+import com.hereliesaz.capturetheflag.geo.distanceTo
 import com.hereliesaz.capturetheflag.ui.Alerts
 import com.hereliesaz.capturetheflag.ui.fmt
 import kotlin.test.assertFalse
@@ -265,6 +267,26 @@ class RulesTest {
         assertNotNull(Alerts.locationLost(over, p.id, t, false, t + 1), "switched off: at once")
         val home = engine.reportLocation(g, p.id, LocationFix(g.flags.getValue(p.team).location, t, 5.0)).game
         assertNull(Alerts.locationLost(home, p.id, t, false, t + HOUR), "at home it doesn't matter")
+    }
+
+    @Test fun eachPlayerSeesOnlyTheirSlice() {
+        val g = activeGame()
+        val p = g.players.values.first()
+        val foe = g.team(p.team.opponent).first()
+        val enemyFlag = g.flags.getValue(p.team.opponent).location
+        val t = DAY + 20 * MINUTE
+        var tr = engine.reportLocation(g, foe.id, LocationFix(g.flags.getValue(foe.team).location, t, 5.0))
+        tr = engine.reportLocation(tr.game, p.id, LocationFix(enemyFlag.north(60.0), t, 5.0))
+        tr += engine.goLive(tr.game, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(enemyFlag.north(60.0), t, 5.0), t)
+        val mine = GameView.of(tr.game, p.id)
+        assertEquals(setOf(p.team), mine.flags.keys, "never the enemy flag")
+        assertEquals(setOf(p.id), mine.lastFix.keys, "never anyone else's position")
+        assertTrue(mine.territory.cells.isEmpty())
+        assertTrue(mine.streams.getValue("s1").target.distanceTo(enemyFlag) > 50, "a flag run's target isn't the flag, for the attacker")
+        assertEquals(enemyFlag, GameView.of(tr.game, foe.id).streams.getValue("s1").target, "the defenders know their own flag")
+        val onlooker = GameView.of(tr.game, null)
+        assertTrue(onlooker.flags.isEmpty() && onlooker.lastFix.isEmpty() && onlooker.incursions.isEmpty())
+        assertEquals(2, onlooker.jails.size)
     }
 
     @Test fun onEnemyGroundOrInJailYouReCutOffFromYourTeam() {
