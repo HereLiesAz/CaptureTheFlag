@@ -41,10 +41,11 @@ fun main() = runBlocking {
     val cities = archive?.let { SurveyCache(it, OnboardedDirectory(surveyor)) } ?: OnboardedDirectory(surveyor)
     // Every node must list the same roster: panels are drawn from it. Alone, a node is its own panel of one.
     val roster = System.getenv("REFEREES")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)?.plus(keys.pub)?.distinct() ?: listOf(keys.pub)
-    val referee = Referee(keys, store, cities, roster)
+    val media = MediaStore(File(dir, "media"))
+    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::read))
     referee.restore()
 
-    println("node ${keys.pub} on ws://0.0.0.0:$port/ with ${store.size()} events" + (archive?.let { ", archiving to ${it.root}" } ?: ""))
+    println("node ${keys.pub} on ws://0.0.0.0:$port/ (media at /media/) with ${store.size()} events" + (archive?.let { ", archiving to ${it.root}" } ?: ""))
 
     launch { store.live.collect { referee.accept(it); archive?.record(it) } }
     launch { while (true) { delay(BATCH_EVERY_MS); referee.flush() } }
@@ -52,7 +53,7 @@ fun main() = runBlocking {
 
     embeddedServer(Netty, port = port) {
         install(WebSockets)
-        routing { relay(store) }
+        routing { relay(store); media(media) }
     }.start(wait = true)
     Unit
 }

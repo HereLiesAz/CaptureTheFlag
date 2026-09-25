@@ -13,6 +13,9 @@ import com.hereliesaz.capturetheflag.rules.GameRules
 import io.ktor.client.plugins.websocket.WebSockets as ClientWebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.server.routing.routing
+import io.ktor.client.request.header
+import io.ktor.client.request.setBody
+import io.ktor.client.request.put
 import io.ktor.server.testing.testApplication
 import io.ktor.server.websocket.WebSockets
 import io.ktor.websocket.Frame
@@ -385,6 +388,38 @@ class NodeTest {
         } finally {
             scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
         }
+    }
+
+    @Test fun theMediaStoreTakesSignedUploadsAndKeepsPrivatePhotosPrivate() = testApplication {
+        val dir = createTempDirectory("media").toFile()
+        val store = MediaStore(dir)
+        routing { media(store) }
+        startApplication()
+        val http = createClient { }
+        val me = Keys.generate()
+        val client = MediaClient("ws://localhost", http)
+        assertEquals("http://localhost/media/", client.base)
+
+        // A public segment: stored by its hash, fetched back intact.
+        val segment = ByteArray(5_000) { (it % 251).toByte() }
+        val url = client.put(me, segment)!!
+        assertEquals(client.base + Media.sha(segment), url)
+        assertTrue(client.get(url)!!.contentEquals(segment))
+
+        // A private photo: the node holds ciphertext; only the reference's key opens it.
+        val photo = "the statue on Esplanade".toByteArray()
+        val ref = client.putPrivate(me, photo)!!
+        val (plainUrl, key) = Media.parse(ref)
+        assertNotNull(key)
+        assertFalse(store.read(plainUrl.substringAfterLast('/'))!!.contentEquals(photo), "the node can't read it")
+        assertTrue(client.get(ref)!!.contentEquals(photo))
+
+        // No signature, or a signature for a different file: refused.
+        val sha = Media.sha(segment + 1)
+        assertEquals(401, http.put("/media/$sha") { setBody(segment + 1) }.status.value)
+        assertEquals(401, http.put("/media/$sha") { header("Authorization", Media.auth(me, Media.sha(segment))); setBody(segment + 1) }.status.value)
+        // Signed, but the bytes don't match the name: refused.
+        assertEquals(400, http.put("/media/$sha") { header("Authorization", Media.auth(me, sha)); setBody(segment) }.status.value)
     }
 
     @Test fun nip44MatchesTheOfficialVectors() {

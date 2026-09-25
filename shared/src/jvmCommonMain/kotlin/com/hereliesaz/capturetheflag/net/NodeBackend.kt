@@ -53,6 +53,10 @@ class NodeBackend(
     private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
     private val answerWithinMs: Long = 30_000,
+    /** The node's media store, for selfies, evidence photos and stream video. */
+    private val media: MediaClient? = null,
+    /** Reads a photo this phone took, by the reference the platform gave it. */
+    private val read: suspend (String) -> ByteArray? = { null },
 ) : GameBackend {
     private val _me = MutableStateFlow<User?>(null)
     override val me: StateFlow<User?> = _me
@@ -74,6 +78,7 @@ class NodeBackend(
     private val names = ConcurrentHashMap<PlayerId, String>()
     private val bleKeys = ConcurrentHashMap<String, ByteArray>()
     private val seen = ConcurrentHashMap.newKeySet<String>()
+    private val laps = ConcurrentHashMap<String, MutableStateFlow<List<String>>>()
 
     init {
         scope.launch { relay.events.collect { if (seen.add(it.id)) runCatching { receive(it) } } }
@@ -123,6 +128,10 @@ class NodeBackend(
                 val m = Nostr.json.decodeFromString(TeamMessage.serializer(), Nip44.open(e.content, keys, e.pubkey))
                 post(m.channel, e.pubkey, m.text, e.created_at)
             }
+            Kinds.LAP -> {
+                val stream = e.tag("s") ?: return
+                lap(stream).update { if (e.content in it) it else it + e.content }
+            }
             Kinds.PROFILE -> runCatching { (Nostr.json.parseToJsonElement(e.content) as JsonObject)["name"]!!.jsonPrimitive.content }
                 .getOrNull()?.let { names[e.pubkey] = it }
         }
@@ -168,15 +177,18 @@ class NodeBackend(
     // --- GameBackend ---
 
     override suspend fun register(displayName: String, selfieUri: String): User {
+        // The selfie is public, by design: it goes on the roster for both sides.
+        val selfie = if (selfieUri.startsWith("http")) selfieUri
+            else read(selfieUri)?.let { bytes -> media?.put(keys, bytes) } ?: selfieUri
         relay.publish(keys.sign(Kinds.PROFILE, Nostr.json.encodeToString(JsonObject.serializer(), kotlinx.serialization.json.buildJsonObject {
-            put("name", kotlinx.serialization.json.JsonPrimitive(displayName)); put("picture", kotlinx.serialization.json.JsonPrimitive(selfieUri))
+            put("name", kotlinx.serialization.json.JsonPrimitive(displayName)); put("picture", kotlinx.serialization.json.JsonPrimitive(selfie))
         })))
-        return User(keys.pub, displayName, selfieUri).also { _me.value = it; names[it.id] = displayName }
+        return User(keys.pub, displayName, selfie).also { _me.value = it; names[it.id] = displayName }
     }
 
     override suspend fun requestCity(cityName: String): Game {
         val city = key(cityName)
-        relay.subscribe("city:$city", listOf(Filter(kinds = setOf(Kinds.GAME_OPEN, Kinds.PUBLIC_VIEW, Kinds.RADIO, Kinds.NOTE), tags = mapOf("c" to setOf(city)))))
+        relay.subscribe("city:$city", listOf(Filter(kinds = setOf(Kinds.GAME_OPEN, Kinds.PUBLIC_VIEW, Kinds.RADIO, Kinds.NOTE, Kinds.LAP), tags = mapOf("c" to setOf(city)))))
         // A round already running shows up within moments; otherwise ask for one.
         val running = withTimeoutOrNull(LOOK_MS) { slot(city).first { it != null && it.phase !is GamePhase.Ended } }
         if (running != null) return running
@@ -196,25 +208,53 @@ class NodeBackend(
     override suspend fun appointCoCaptains(cityName: String, picks: Set<PlayerId>) = act(cityName, Action.CoCaptains(picks))
 
     override suspend fun placeFlag(cityName: String, venueName: String, kind: FlagVenueKind, address: String, venue: GeoPoint, photo: PhotoEvidence) =
-        act(cityName, Action.PlaceFlag(venueName, kind, address, venue.lat, venue.lng, photo.dto()))
+        act(cityName, Action.PlaceFlag(venueName, kind, address, venue.lat, venue.lng, stored(photo).dto()))
 
     override suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence) =
-        act(cityName, Action.PlaceJail(venueName, address, venue.lat, venue.lng, photo.dto()))
+        act(cityName, Action.PlaceJail(venueName, address, venue.lat, venue.lng, stored(photo).dto()))
 
     override suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix) =
         act(cityName, Action.GoLive("s-" + ByteArray(8).also { SecureRandom().nextBytes(it) }.toHex(), purpose, fix.dto()))
 
-    override suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String): Verdict {
+    override suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String, segment: ByteArray?): Verdict {
         // Frames come every few seconds; waiting on each would back them up. A dropped stream shows in the view.
         val round = current[key(cityName)]?.let { rounds[it] } ?: return Verdict.Rejected("No game here yet")
+        segment?.let { media?.put(keys, it) }
         val body = Nostr.json.encodeToString(Action.serializer(), Action.Frame(streamId, fix.dto(), chunk))
         relay.publish(keys.sign(Kinds.ACTION, Sealed.forPanel(body, keys, round.panel), listOf(listOf("g", round.id))))
         return Verdict.Valid
     }
 
-    override suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence) = act(cityName, Action.EndStream(streamId, photo.dto()))
+    override suspend fun lapSegment(cityName: String, streamId: String, chunk: String, segment: ByteArray) {
+        val game = current[key(cityName)] ?: return
+        media?.put(keys, segment) ?: return
+        relay.publish(keys.sign(Kinds.LAP, chunk, listOf(listOf("g", game), listOf("s", streamId), listOf("c", key(cityName)))))
+    }
+
+    override fun segments(cityName: String, streamId: String): StateFlow<List<String>> {
+        val m = media ?: return MutableStateFlow(emptyList())
+        val out = MutableStateFlow<List<String>>(emptyList())
+        scope.launch {
+            kotlinx.coroutines.flow.combine(slot(key(cityName)), lap(streamId)) { g, lapped ->
+                (g?.streams?.get(streamId)?.chunks.orEmpty() + lapped).distinct().map { m.base + it }
+            }.collect { out.value = it }
+        }
+        return out
+    }
+
+    override suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence) = act(cityName, Action.EndStream(streamId, stored(photo).dto()))
     override suspend fun dispute(cityName: String, streamId: String, reason: String) = act(cityName, Action.Dispute(streamId, reason))
-    override suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence) = act(cityName, Action.Tag(target, photo.dto()))
+    override suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence) = act(cityName, Action.Tag(target, stored(photo).dto()))
+
+    /**
+     * An evidence photo, uploaded encrypted: the node keeps ciphertext, and the key rides inside
+     * the sealed action, so only the referees can look. Left as is when there's no store.
+     */
+    private suspend fun stored(photo: PhotoEvidence): PhotoEvidence {
+        if (photo.imageUri.startsWith("http")) return photo
+        val ref = read(photo.imageUri)?.let { media?.putPrivate(keys, it) } ?: return photo
+        return photo.copy(imageUri = ref)
+    }
 
     override suspend fun reportLocation(cityName: String, fix: LocationFix) =
         seal(cityName, Kinds.POSITION, Nostr.json.encodeToString(Position.serializer(), fix.dto()))
@@ -272,6 +312,7 @@ class NodeBackend(
     }
 
     private fun slot(city: String) = games.getOrPut(city) { MutableStateFlow(null) }
+    private fun lap(stream: String) = laps.getOrPut(stream) { MutableStateFlow(emptyList()) }
     private fun feed(city: String) = radio.getOrPut(city) { MutableStateFlow(emptyList()) }
     private fun thread(key: String) = threads.getOrPut(key) { MutableStateFlow(emptyList()) }
 

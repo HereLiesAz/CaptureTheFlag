@@ -11,6 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -105,10 +106,18 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
         status: String,
         lap: Boolean,
         finishLabel: String?,
-        onFrame: suspend (com.hereliesaz.capturetheflag.model.LocationFix, String) -> Unit,
+        onFrame: suspend (com.hereliesaz.capturetheflag.model.LocationFix, String, ByteArray) -> Unit,
+        onLapSegment: suspend (String, ByteArray) -> Unit,
         onFinish: (PhotoEvidence?) -> Unit,
         modifier: Modifier,
-    ) = LiveCameraView(this, challenge, status, lap, finishLabel, onFrame, onFinish, modifier)
+    ) = LiveCameraView(this, challenge, status, lap, finishLabel, onFrame, onLapSegment, onFinish, modifier)
+
+    @Composable
+    override fun StreamPlayer(urls: List<String>, modifier: Modifier) = StreamPlayerView(urls, modifier)
+
+    override suspend fun readMedia(ref: String): ByteArray? = withContext(Dispatchers.IO) {
+        runCatching { activity.contentResolver.openInputStream(Uri.parse(ref))?.use { it.readBytes() } }.getOrNull()
+    }
 
     override fun startProximity(token: String) = proximity.start(token)
     override fun stopProximity() = proximity.stop()
@@ -131,17 +140,20 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
 
     @Composable
     override fun Portrait(uri: String?, modifier: Modifier) {
-        val bmp = remember(uri) {
-            uri?.let { u ->
-                runCatching {
-                    activity.contentResolver.openInputStream(Uri.parse(u))?.use {
-                        BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = 4 })
-                    }
-                }.getOrNull()
+        // Our own photos are local; everyone else's selfies come from a node's media store.
+        val bmp by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(null, uri) {
+            value = uri?.let { u ->
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val stream = if (u.startsWith("http")) java.net.URL(u).openStream() else activity.contentResolver.openInputStream(Uri.parse(u))
+                        stream?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = 4 }) }
+                    }.getOrNull()
+                }
             }
         }
-        if (bmp != null) {
-            Image(bmp.asImageBitmap(), null, modifier.clip(androidx.compose.foundation.shape.CircleShape), contentScale = ContentScale.Crop)
+        val b = bmp
+        if (b != null) {
+            Image(b.asImageBitmap(), null, modifier.clip(androidx.compose.foundation.shape.CircleShape), contentScale = ContentScale.Crop)
         } else {
             Box(modifier.clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xFF1C1C1C)))
         }

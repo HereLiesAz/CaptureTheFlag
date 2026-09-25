@@ -2,6 +2,7 @@ package com.hereliesaz.capturetheflag.node
 
 import com.hereliesaz.capturetheflag.net.*
 import com.hereliesaz.capturetheflag.data.PhotoMatcher
+import com.hereliesaz.capturetheflag.net.Media
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.LiveStream
 import com.hereliesaz.capturetheflag.model.StreamPurpose
@@ -17,12 +18,17 @@ import com.hereliesaz.capturetheflag.net.ReviewReport.Result
  * ruling rests on. The stream stands unless a check fails.
  *
  * [matcher] scores the final still against the leader's registration photo, when this node
- * runs one. Hearing the challenge on the audio, and checking the video against the hashes sent
- * live, need the video itself, which reaches nodes with the media store.
+ * runs one. [media] is this node's store: the stream's segments are checked against the hashes
+ * sent live. Hearing the challenge on the audio still needs speech recognition.
  */
-class StreamJudge(private val referee: String, private val matcher: PhotoMatcher? = null) {
+class StreamJudge(
+    private val referee: String,
+    private val matcher: PhotoMatcher? = null,
+    /** This node's media store, by hash. */
+    private val media: (String) -> ByteArray? = { null },
+) {
     suspend fun review(g: Game, s: LiveStream): ReviewReport {
-        val checks = listOf(continuity(s), liveInTime(s), challengeTiming(s), finalStill(g, s), visualMatch(g, s), heard(), integrity())
+        val checks = listOf(continuity(s), liveInTime(s), challengeTiming(s), finalStill(g, s), visualMatch(g, s), heard(), integrity(s))
         return ReviewReport(s.id, s.review, referee, checks.none { it.result == Result.FAIL }, checks)
     }
 
@@ -87,6 +93,19 @@ class StreamJudge(private val referee: String, private val matcher: PhotoMatcher
         return Check("Matches the registration photo", if (ok) Result.PASS else Result.FAIL, "Similarity %.2f; %.2f needed".format(score, GameRules.VISUAL_MATCH_MIN))
     }
 
-    private fun heard() = Check("Challenge heard on the audio", Result.NOT_RUN, "The video hasn't reached this node: needs the media store")
-    private fun integrity() = Check("Video matches the live hashes", Result.NOT_RUN, "The video hasn't reached this node: needs the media store")
+    private fun heard() = Check("Challenge heard on the audio", Result.NOT_RUN, "This node runs no speech recognition yet")
+    /**
+     * Every segment the phone reported live, fetched and hashed again. The store names files by
+     * their hash, so a segment that's here is the segment that was reported; one that isn't may
+     * have gone to another node.
+     */
+    private fun integrity(s: LiveStream): Check {
+        if (s.chunks.isEmpty()) return Check("Video matches the live hashes", Result.FAIL, "No segments were reported")
+        val here = s.chunks.count { c -> media(c)?.let { Media.sha(it) == c } == true }
+        return when (here) {
+            s.chunks.size -> Check("Video matches the live hashes", Result.PASS, "All ${s.chunks.size} segments here, each matching the hash sent live")
+            0 -> Check("Video matches the live hashes", Result.NOT_RUN, "None of the ${s.chunks.size} segments reached this node")
+            else -> Check("Video matches the live hashes", Result.NOT_RUN, "$here of ${s.chunks.size} segments reached this node; the rest may be on another")
+        }
+    }
 }
