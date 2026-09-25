@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "TemplateApp"
-include(":app")
+rootProject.name = "CaptureTheFlag"
+include(":app", ":shared")
