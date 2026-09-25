@@ -332,9 +332,10 @@ class GameEngine(
     private fun near(game: Game, who: PlayerId, point: GeoPoint, radiusM: Double) =
         radiusM > 0 && game.lastFix[who]?.point?.distanceTo(point)?.let { it <= radiusM } == true
 
-    fun captureFlag(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Transition {
+    /** [visualMatch] is the matcher's similarity to the leader's registration photo, if one ran. */
+    fun captureFlag(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
-        val v = Verification.flagCapture(game, by, photo, now)
+        val v = Verification.flagCapture(game, by, photo, now, visualMatch)
         if (v != Verdict.Valid) return Transition(game, v)
         return end(game, Outcome.FlagCaptured(game.players.getValue(by).team, by), now).settled()
     }
@@ -537,9 +538,9 @@ class GameEngine(
      * of it for [GameRules.JAILBREAK_HOLD] unbroken. Leaving, or being jailed, ends the attempt.
      * On completion every teammate held (reported or en route, never the disqualified) walks free.
      */
-    fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Transition {
+    fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
-        val v = Verification.jailbreak(game, by, photo, now)
+        val v = Verification.jailbreak(game, by, photo, now, visualMatch)
         if (v != Verdict.Valid) return Transition(game, v)
         val rescuer = game.players.getValue(by)
         if (rescuer.breakoutSince != null) return game.reject("Jailbreak already under way")

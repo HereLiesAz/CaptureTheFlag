@@ -26,7 +26,11 @@ Every photo goes through the same checks (`Verification.sound`, `Verification.fa
 | Motion-sensor pose sampled when the photo was taken | 3 s |
 | Phone held like a camera: camera axis near the horizon | ±50° |
 | Photo's claimed facing (EXIF GPSImgDirection) agrees with the sensor heading | 25° |
-| Camera pointed at the target (flag, jail, tagged player) | 45°, widened by GPS uncertainty up close; not judged within 15 m |
+| Tags: camera pointed at the tagged player | 45°, widened by GPS uncertainty up close; not judged within 15 m |
+| Flag capture and jailbreak: photo shows what the leader registered | see below |
+| Flag capture and jailbreak: visual match to the registration photo, when a matcher runs | similarity ≥ 0.35 |
+
+**Against the leader's photo.** The leader's registration photo is the reference: a known spot, facing the object. A capture or jailbreak photo taken within 15 m of that spot must face the same way (45°). From anywhere else, the two camera rays must meet in front of both cameras, within 60 m of where the leader stood (widened by both GPS fixes' uncertainty). Near-parallel rays pass only if the photographer is roughly on the leader's line looking the same way. `PhotoMatcher` (`data/PhotoMatcher.kt`) is the hook for comparing the images themselves; it isn't implemented yet, and needs server-side feature matching.
 
 Photos come from the in-app camera (`platform/CameraActivity.kt`), which stamps GPS from a fresh fix, reads the rotation-vector sensor at the shutter (heading corrected to true north by local magnetic declination), writes the facing into EXIF, and hands the pose back with the photo. A phone without a rotation sensor can't produce valid evidence.
 

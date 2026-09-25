@@ -70,6 +70,7 @@ class InMemoryBackend(
     private val clock: () -> Millis,
     private val random: Random = Random.Default,
     private val travel: TravelTimeEstimator = HeuristicTravel,
+    private val matcher: PhotoMatcher? = null,
 ) : GameBackend {
     private val _ledger = MutableStateFlow<List<Award>>(emptyList())
     override val ledger: StateFlow<List<Award>> = _ledger.asStateFlow()
@@ -191,11 +192,20 @@ class InMemoryBackend(
     override suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence) =
         apply(cityName) { engine.placeJail(it, myId(), venueName, address, venue, photo, clock()) }
 
-    override suspend fun jailbreak(cityName: String, photo: PhotoEvidence) =
-        apply(cityName) { engine.jailbreak(it, myId(), photo, clock()) }
+    override suspend fun jailbreak(cityName: String, photo: PhotoEvidence): Verdict {
+        val ref = enemyOf(cityName)?.let { (g, t) -> g.jails[t]?.photo }
+        val score = ref?.let { matcher?.similarity(photo.imageUri, it.imageUri) }
+        return apply(cityName) { engine.jailbreak(it, myId(), photo, clock(), score) }
+    }
 
-    override suspend fun captureFlag(cityName: String, photo: PhotoEvidence) =
-        apply(cityName) { engine.captureFlag(it, myId(), photo, clock()) }
+    override suspend fun captureFlag(cityName: String, photo: PhotoEvidence): Verdict {
+        val ref = enemyOf(cityName)?.let { (g, t) -> g.flags[t]?.photo }
+        val score = ref?.let { matcher?.similarity(photo.imageUri, it.imageUri) }
+        return apply(cityName) { engine.captureFlag(it, myId(), photo, clock(), score) }
+    }
+
+    /** The current game and the team opposing me, for looking up what I'm photographing. */
+    private fun enemyOf(cityName: String) = slot(cityName).value?.let { g -> g.players[myId()]?.let { g to it.team.opponent } }
 
     override suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence): Verdict {
         // Report window from where the target stands to the jail they must reach.

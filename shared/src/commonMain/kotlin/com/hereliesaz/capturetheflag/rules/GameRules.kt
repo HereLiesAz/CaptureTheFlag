@@ -48,6 +48,13 @@ object GameRules {
     /** Closer than this, direction is meaningless and isn't checked. */
     const val FACING_MIN_DISTANCE_M = 15.0
 
+    /** The flagged object is assumed to be at most this far in front of where the leader stood to register it. */
+    const val REFERENCE_REACH_M = 60.0
+    /** Rays closer to parallel than this can't be triangulated; they're judged by heading and offset instead. */
+    const val PARALLEL_DEG = 8.0
+    /** Minimum visual similarity to the registration photo, when a matcher is available (0..1). */
+    const val VISUAL_MATCH_MIN = 0.35
+
     /** A jail must sit at least this far from its own team's flag. */
     const val JAIL_MIN_FROM_FLAG_M = 400.0
     /** Jail photo vs. registered jail location, for registration and for jailbreak. */

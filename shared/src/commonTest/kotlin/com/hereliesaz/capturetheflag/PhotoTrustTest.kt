@@ -76,7 +76,7 @@ class PhotoTrustTest {
         val flag = g.flags.getValue(p.team.opponent).location
         val t = DAY + 60_000
         fun reason(e: PhotoEvidence) = (Verification.flagCapture(g, p.id, e, t) as Verdict.Rejected).reason
-        assertEquals("Camera wasn't pointed at the target", reason(shot(flag, t, heading = 180.0)))
+        assertEquals("Camera wasn't pointed at what the leader registered", reason(shot(flag, t, heading = 180.0)))
         assertEquals("Phone wasn't held like a camera", reason(shot(flag, t, heading = 0.0, pitch = -85.0)))
         assertEquals("Photo's facing disagrees with the phone's sensors", reason(shot(flag, t, heading = 0.0, claimed = 90.0)))
         assertEquals("Sensor reading does not match photo time", reason(shot(flag, t, heading = 0.0, poseAt = t - 10_000)))
@@ -84,9 +84,12 @@ class PhotoTrustTest {
         assertEquals("Photo does not record which way it faced", reason(shot(flag, t, 0.0).copy(exifDirection = null)))
     }
 
-    @Test fun rightOnTopOfItDirectionIsNotJudged() {
-        val g = active()
-        val p = g.players.values.first()
+    @Test fun withoutAReferencePoseRightOnTopOfItDirectionIsNotJudged() {
+        val g0 = active()
+        val p = g0.players.values.first()
+        val enemy = p.team.opponent
+        val bare = g0.flags.getValue(enemy).let { it.copy(photo = it.photo.copy(pose = null)) }
+        val g = g0.copy(flags = g0.flags + (enemy to bare))
         val flag = g.flags.getValue(p.team.opponent).location
         val t = DAY + 60_000
         val e = PhotoEvidence("i", flag, t, LocationFix(flag, t, 5.0), exifDirection = 200.0, pose = DevicePose(200.0, 0.0, 0.0, t))
@@ -105,5 +108,58 @@ class PhotoTrustTest {
         val r = engine.tag(g, jailer.id, prisoner.id, away, t, { _, _ -> prisoner.id })
         assertIs<Verdict.Rejected>(r.verdict)
         assertTrue("pointed" in (r.verdict as Verdict.Rejected).reason)
+    }
+
+    // --- Against the leader's registration photo ---------------------------------------------
+
+    /** A game whose enemy flag was registered by a leader standing at [at] facing [heading]. */
+    private fun withReference(at: GeoPoint, heading: Double): Pair<Game, String> {
+        val g = active()
+        val p = g.players.values.first()
+        val t = p.team.opponent
+        val ref = PhotoEvidence("ref", at, DAY, LocationFix(at, DAY, 5.0), exifDirection = heading, pose = DevicePose(heading, 0.0, 0.0, DAY))
+        val flag = g.flags.getValue(t).copy(location = at, photo = ref)
+        return g.copy(flags = g.flags + (t to flag)) to p.id
+    }
+
+    private fun m(dNorth: Double, dEast: Double, from: GeoPoint) =
+        GeoPoint(from.lat + dNorth / 111_320.0, from.lng + dEast / (111_320.0 * kotlin.math.cos(from.lat * kotlin.math.PI / 180)))
+
+    private fun capture(g: Game, by: String, at: GeoPoint, heading: Double, t: Long = DAY + 60_000, visual: Double? = null) =
+        Verification.flagCapture(g, by, PhotoEvidence("c", at, t, LocationFix(at, t, 5.0), exifDirection = heading, pose = DevicePose(heading, 0.0, 0.0, t)), t, visual)
+
+    @Test fun raysThatMeetAtTheObjectPass() {
+        // Leader stood at L facing north; the statue is ~20 m north of L.
+        val l = GeoPoint(30.05, -90.1)
+        val (g, by) = withReference(l, 0.0)
+        val statue = m(20.0, 0.0, l)
+        // Capturer 25 m east of the statue, looking west at it.
+        val from = m(20.0, 25.0, l)
+        val facingStatue = from.bearingTo(statue)
+        assertEquals(Verdict.Valid, capture(g, by, from, facingStatue))
+    }
+
+    @Test fun raysThatMissAreRejected() {
+        val l = GeoPoint(30.05, -90.1)
+        val (g, by) = withReference(l, 0.0)
+        // Same spot, looking east instead of west: the rays never meet in front of both.
+        val from = m(20.0, 25.0, l)
+        val r = capture(g, by, from, 90.0) as Verdict.Rejected
+        assertEquals("Camera wasn't pointed at what the leader registered", r.reason)
+    }
+
+    @Test fun fromTheLeadersSpotYouMustFaceTheSameWay() {
+        val l = GeoPoint(30.05, -90.1)
+        val (g, by) = withReference(l, 120.0)
+        assertEquals(Verdict.Valid, capture(g, by, m(3.0, 3.0, l), 130.0))
+        assertIs<Verdict.Rejected>(capture(g, by, m(3.0, 3.0, l), 300.0))
+    }
+
+    @Test fun aLowVisualScoreFailsEvenWithPerfectSensors() {
+        val l = GeoPoint(30.05, -90.1)
+        val (g, by) = withReference(l, 0.0)
+        val r = capture(g, by, m(3.0, 0.0, l), 0.0, visual = 0.1) as Verdict.Rejected
+        assertEquals("Photo doesn't show what the leader registered", r.reason)
+        assertEquals(Verdict.Valid, capture(g, by, m(3.0, 0.0, l), 0.0, visual = 0.8))
     }
 }
