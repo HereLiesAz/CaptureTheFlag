@@ -15,11 +15,6 @@ fun interface TravelTimeEstimator {
     suspend fun travelMs(from: GeoPoint, to: GeoPoint, departAt: Millis): Long
 }
 
-/** Multiplier ≥ 1 for conditions that slow people down: snow, ice, extreme heat, storms. */
-fun interface WeatherFactor {
-    suspend fun at(point: GeoPoint, time: Millis): Double
-}
-
 /**
  * The estimate in use: straight-line distance with a detour factor, taking the faster of walking
  * (5 km/h) and transit (18 km/h in-vehicle plus a 10 minute wait and 5 minute walk).
@@ -36,8 +31,4 @@ object HeuristicTravel : TravelTimeEstimator {
         val transit = (d / TRANSIT_M_PER_MS).roundToLong() + TRANSIT_OVERHEAD
         return min(walk, transit)
     }
-}
-
-object NoWeather : WeatherFactor {
-    override suspend fun at(point: GeoPoint, time: Millis) = 1.0
 }

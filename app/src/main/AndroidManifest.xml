@@ -31,6 +31,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".platform.CameraActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.CaptureTheFlag" />
+
         <service
             android:name=".platform.TrackingService"
             android:exported="false"

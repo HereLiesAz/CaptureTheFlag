@@ -55,7 +55,6 @@ class InMemoryBackend(
     private val clock: () -> Millis,
     private val random: Random = Random.Default,
     private val travel: TravelTimeEstimator = HeuristicTravel,
-    private val weather: WeatherFactor = NoWeather,
 ) : GameBackend {
     private val _ledger = MutableStateFlow<List<Award>>(emptyList())
     override val ledger: StateFlow<List<Award>> = _ledger.asStateFlow()
@@ -186,7 +185,7 @@ class InMemoryBackend(
         val from = g?.lastFix?.get(target)?.point
         val jail = g?.players?.get(target)?.let { g.jails[it.team.opponent] }?.location
         val window = if (from != null && jail != null) {
-            JailRules.reportWindow(travel.travelMs(from, jail, clock()), weather.at(from, clock()))
+            JailRules.reportWindow(travel.travelMs(from, jail, clock()))
         } else GameRules.HOUR
         return apply(cityName) { engine.tag(it, myId(), target, photo, clock(), bleRegistry, window) }
     }

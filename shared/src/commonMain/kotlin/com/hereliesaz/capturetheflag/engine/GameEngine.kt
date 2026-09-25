@@ -570,7 +570,7 @@ class GameEngine(
 
     private fun Player.freed() = copy(jailedAt = null, jailDeadline = null, reportingSince = null, reportedAt = null)
 
-    /** Flag moved (or any other disqualifying breach) as determined by moderation or detection. */
+    /** Any disqualifying breach, as determined by moderation. Flags are immovable things, so they can't be moved. */
     fun forfeit(game: Game, loser: Team, reason: String, now: Millis): Transition =
         if (game.phase is GamePhase.Ended) game.reject("Game already over") else end(game, Outcome.Forfeit(loser, reason), now).settled()
 

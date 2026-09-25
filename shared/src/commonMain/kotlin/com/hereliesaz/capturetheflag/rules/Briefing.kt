@@ -44,7 +44,7 @@ object Briefing {
         if (me.role == Role.CAPTAIN) add("You may name up to ${GameRules.MAX_CO_CAPTAINS} co-captains to share the leadership.")
         if (me.team !in game.flags) {
             add("Place the flag: a public space, public building or business inside your territory.")
-            add("Photograph it on site with location on. It may not move for the whole round.")
+            add("The flag is not an object you carry. It is something already there that cannot move: a statue, a doorway, a mural, a bench bolted down. Photograph it on site.")
         } else if (me.team !in game.jails) {
             add("Place the jail: public, inside your territory, at least ${GameRules.JAIL_MIN_FROM_FLAG_M.toInt()} m from your flag.")
             add("The enemy will see where it is.")
@@ -93,7 +93,7 @@ object Briefing {
             if (game.team(me.team).any { it.isJailed && !it.disqualified }) {
                 add("Teammates are jailed. Hold the enemy jail for ${GameRules.JAILBREAK_HOLD / MIN} minutes to free them.")
             }
-            if (me.isLeader) add("Your flag must stay exactly where it is, or your team forfeits.")
+            if (me.isLeader) add("Your flag can't move, so it can't run. Someone has to guard it.")
         }
     }
 }

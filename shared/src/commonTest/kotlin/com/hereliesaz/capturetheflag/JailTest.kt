@@ -92,13 +92,12 @@ class JailTest {
         assertEquals(Verdict.Valid, engine.placeJail(flagged, cap.id, "J", "b", jailFor(h), photo(jailFor(h), DAY), DAY).verdict)
     }
 
-    @Test fun reportWindowScalesWithDistanceAndWeather() = runTest {
+    @Test fun reportWindowScalesWithDistance() = runTest {
         val jail = GeoPoint(30.0, -90.0)
         val near = JailRules.reportWindow(HeuristicTravel.travelMs(GeoPoint(30.001, -90.0), jail, 0))
         val far = JailRules.reportWindow(HeuristicTravel.travelMs(GeoPoint(30.3, -90.0), jail, 0))
-        val snowy = JailRules.reportWindow(HeuristicTravel.travelMs(GeoPoint(30.3, -90.0), jail, 0), weatherFactor = 1.5)
         assertEquals(GameRules.JAIL_REPORT_MIN_WINDOW + GameRules.JAIL_REPORT_HOLD, near)
-        assertTrue(far > near && snowy > far)
+        assertTrue(far > near)
     }
 
     @Test fun reportingNeedsFiveUnbrokenMinutesAtTheJail() {

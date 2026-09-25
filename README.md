@@ -10,7 +10,7 @@ A city, cut in half. Two teams. Seven days. One photograph ends it.
 | 24 h sign-up → 1 h flag placement → 7 days of play → tie. Next round starts on request after any ending | `engine/GameEngine.kt`, `rules/GameRules.kt` |
 | Fewer than 2 sign-ups: round cancelled | `GameEngine.closeSignup` |
 | Random, size-balanced teams; one random captain each; captain names up to 2 co-captains | `rules/TeamAssignment.kt` |
-| Leaders register venue (public space / public building / business), address, and a flag photo with GPS EXIF. Venue must sit inside the team's own territory | `Verification.flagRegistration` |
+| The flag is not an object: leaders choose something already there that cannot move (a statue, a doorway, a mural) at a public space, public building or business, and register it with its address and a photo with GPS EXIF. Venue must sit inside the team's own territory | `Verification.flagRegistration` |
 | Leaders also register a jail: public, own territory, flag first, at least 400 m from it. Public to both teams. Missing flag or jail at the deadline forfeits | `Verification.jailRegistration` |
 | Win: an opponent photographs the flag within 40 m of its registered location | `Verification.flagCapture` |
 | Jail: photo of an opponent standing in your territory. Photo EXIF must match the target's last fix (60 m), and the target's BLE token must have been heard within 60 s | `Verification.tag` |
@@ -51,7 +51,7 @@ What it never says: coordinates, distances, the flag's venue or address.
 
 Jail is conceptual, but the report is not.
 
-1. **Tagged.** The prisoner gets a deadline to reach the enemy jail, set by how long the trip takes from where they were caught: the faster of walking and transit, times a weather factor (snow, ice, heat), ×1.25, +10 min, at least 15 min, plus the 5 min report.
+1. **Tagged.** The prisoner gets a deadline to reach the enemy jail, set by how long the trip takes from where they were caught: the faster of walking and transit, ×1.25, +10 min, at least 15 min, plus the 5 min report.
 2. **Report.** Stand within 40 m of the jail for 5 unbroken minutes before the deadline. Stepping away restarts the clock. After that they may leave.
 3. **Frozen.** From the tag until release, a prisoner earns no points and cannot capture, tag, or break anyone out.
 4. **Disqualified.** Miss the deadline and they are out for the round: still frozen, never freed, and every point they earned this round is taken back.
@@ -59,7 +59,7 @@ Jail is conceptual, but the report is not.
 6. **Parole** (perk) only applies once the prisoner has reported.
 7. **Final whistle.** The freeze lifts at the end of the round, so reported prisoners share in the win or tie. The disqualified do not.
 
-Travel time is a general estimate, not a live route (`HeuristicTravel` in `data/TravelTime.kt`): straight-line distance × 1.3 for detours, then the faster of walking at 5 km/h or transit at 18 km/h plus 15 min of waiting and walking. `WeatherFactor` scales it for conditions.
+Travel time is a general estimate, not a live route (`HeuristicTravel` in `data/TravelTime.kt`): straight-line distance × 1.3 for detours, then the faster of walking at 5 km/h or transit at 18 km/h plus 15 min of waiting and walking.
 
 ## Points and levels
 
@@ -165,8 +165,6 @@ Each phone advertises a server-issued token that rotates every 15 minutes over B
 
 - **Backend.** `InMemoryBackend` is single-device, for development only. Needs a real server (Firebase, Supabase, Ktor…) running `GameEngine`.
 - **City data.** `CityDataSource` needs real feeds: census population, OSM buildings/land/water, barrier features. `DemoCityDirectory` is a synthetic New Orleans.
-- **Weather.** `NoWeather` is a stand-in until a weather source is chosen.
-- **Flag forfeit detection.** How a moved flag is detected (periodic re-photo, challenge by opponents, moderation) is not yet specified. `GameEngine.forfeit` is the hook.
 - **Camera EXIF.** Many stock cameras strip GPS unless location tagging is turned on. An in-app CameraX capture would remove that dependency.
 
 ## Stack

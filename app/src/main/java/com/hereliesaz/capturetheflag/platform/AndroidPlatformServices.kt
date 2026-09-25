@@ -40,29 +40,33 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
     private val proximity = Proximity(activity)
     private val fused = LocationServices.getFusedLocationProviderClient(activity)
     private var pending: CompletableDeferred<Boolean>? = null
-    private val camera = activity.registerForActivityResult(ActivityResultContracts.TakePicture()) {
+    private val camera = activity.registerForActivityResult(CameraActivity.Contract()) {
         pending?.complete(it)
     }
 
     override val location: StateFlow<com.hereliesaz.capturetheflag.model.LocationFix?> = Tracking.location
 
-    private suspend fun shoot(prefix: String): Uri? {
+    /**
+     * Opens the in-app camera. A fresh fix is taken first and handed to the camera, which
+     * stamps it into the photo's EXIF; that same fix is published as the live device fix.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun shoot(prefix: String, front: Boolean): Uri? {
         val dir = File(activity.filesDir, "photos").apply { mkdirs() }
         val file = File(dir, "$prefix-${System.currentTimeMillis()}.jpg")
-        val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.photos", file)
+        val live = runCatching { fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
+        live?.let { Tracking.publish(it.latitude, it.longitude, it.time, it.accuracy.toDouble()) }
         val done = CompletableDeferred<Boolean>().also { pending = it }
-        camera.launch(uri)
-        return uri.takeIf { done.await() && file.length() > 0 }
+        camera.launch(CameraActivity.Request(file.path, front, live))
+        if (!done.await() || file.length() == 0L) return null
+        return FileProvider.getUriForFile(activity, "${activity.packageName}.photos", file)
     }
 
-    override suspend fun takeSelfie(): String? = shoot("selfie")?.toString()
+    override suspend fun takeSelfie(): String? = shoot("selfie", front = true)?.toString()
 
     @SuppressLint("MissingPermission")
     override suspend fun takePhoto(): PhotoEvidence? {
-        val uri = shoot("evidence") ?: return null
-        // Live fix sampled right after the shutter; compared server-side against the EXIF.
-        val live = runCatching { fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
-        live?.let { Tracking.publish(it.latitude, it.longitude, it.time, it.accuracy.toDouble()) }
+        val uri = shoot("evidence", front = false) ?: return null
         val (gps, taken) = withContext(Dispatchers.IO) {
             activity.contentResolver.openInputStream(uri)!!.use { s ->
                 val exif = ExifInterface(s)

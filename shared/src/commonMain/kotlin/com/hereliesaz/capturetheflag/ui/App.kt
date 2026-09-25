@@ -436,7 +436,7 @@ private fun FlagForm(onSubmit: (String, FlagVenueKind, String) -> Unit) {
     var venue by remember { mutableStateOf("") }
     var address by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf(FlagVenueKind.PUBLIC_SPACE) }
-    Text("Place your flag. Stand at it. It does not move for seven days.")
+    Text("Choose your flag: something already there that cannot move. A statue, a doorway, a mural. Stand at it and photograph it.")
     OutlinedTextField(venue, { venue = it }, label = { Text("Venue name") }, singleLine = true)
     OutlinedTextField(address, { address = it }, label = { Text("Address") }, singleLine = true)
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
