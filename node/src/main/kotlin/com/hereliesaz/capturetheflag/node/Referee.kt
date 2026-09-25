@@ -50,6 +50,10 @@ class Referee(
         val names: MutableMap<PlayerId, User> = mutableMapOf(),
         val bleKeys: MutableMap<PlayerId, ByteArray> = mutableMapOf(),
         var lastLook: Long? = null,
+        /** Every secret this round holds, for the reveal. */
+        val secrets: MutableList<Secret> = mutableListOf(),
+        /** Secrets not yet committed publicly. */
+        val uncommitted: MutableList<Secret> = mutableListOf(),
     )
 
     private val tables = mutableMapOf<String, Table>()
@@ -63,9 +67,11 @@ class Referee(
     /** Queues player events for the next batch. Opens games on request. */
     suspend fun accept(e: Event) = lock.withLock {
         when (e.kind) {
-            Kinds.ACTION -> {
-                val a = runCatching { Nostr.json.decodeFromString(Action.serializer(), e.content) }.getOrNull() ?: return@withLock
-                if (a is Action.Open) open(a.city) else if (e.tag("g") in tables) pending += e
+            Kinds.ACTION -> when (val game = e.tag("g")) {
+                // Only an open request is public; everything in a game is sealed and read at flush.
+                null -> (runCatching { Nostr.json.decodeFromString(Action.serializer(), e.content) }.getOrNull() as? Action.Open)?.let { open(it.city) }
+                in tables -> pending += e
+                else -> {}
             }
             Kinds.POSITION, Kinds.BLE_KEY -> if (e.tag("g") in tables) pending += e
         }
@@ -110,20 +116,27 @@ class Referee(
         var total = engine.tick(t.game, now)
         val verdicts = mutableMapOf<String, String>()
         for (e in events) {
-            val step = step(t, engine, total.game, e, now) ?: continue
+            val body = runCatching { Nip44.open(e.content, keys, e.pubkey) }.getOrNull()
+            if (body == null) { verdicts[e.id] = "unreadable"; continue }
+            val step = runCatching { step(t, engine, total.game, e, body, now) }.getOrElse { verdicts[e.id] = "malformed"; null } ?: continue
             verdicts[e.id] = (step.verdict as? Verdict.Rejected)?.reason ?: "ok"
             total += step
         }
         t.game = total.game
         ledger += total.awards
-        if (!live) return
+        if (!live) { t.uncommitted.clear(); return }
         publish(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(
             seq, verdicts, total.awards.map { Outcome.AwardDto(it.user, it.points, it.reason) }, total.notices, t.game.phase::class.simpleName ?: "",
         )), t.id)
         for (p in total.pings) {
-            // Prototype: plaintext, tagged to each recipient. Design: NIP-44 per recipient.
-            val tags = p.recipients.map { listOf("p", it) }
-            publish(Kinds.PING, """{"number":${p.number},"lat":${p.location.lat},"lng":${p.location.lng},"radius":${p.radiusM},"kind":"${p.kind}"}""", t.id, tags)
+            val body = Nostr.json.encodeToString(PingDto.serializer(), PingDto(p.number, p.location.lat, p.location.lng, p.radiusM, p.kind.toString()))
+            // One event per recipient: nobody else can read it, and nobody else is named on it.
+            for (to in p.recipients) publish(Kinds.PING, Nip44.seal(body, keys, to), t.id, listOf(listOf("p", to)))
+        }
+        for (s in t.uncommitted) publish(Kinds.COMMIT, Nostr.json.encodeToString(Commit.serializer(), Commit(s.what, s.who, s.team, s.commitment)), t.id)
+        t.uncommitted.clear()
+        if (before.phase !is GamePhase.Ended && t.game.phase is GamePhase.Ended) {
+            publish(Kinds.REVEAL, Nostr.json.encodeToString(Reveal.serializer(), Reveal(t.secrets.toList())), t.id)
         }
         booth.narrate(before, t.game, total.awards, total.notices, now, t.lastLook, total.highlights).forEach {
             publish(Kinds.RADIO, it.text, t.id, listOf(listOf("c", t.city)))
@@ -131,17 +144,25 @@ class Referee(
         t.lastLook = now
     }
 
-    /** One player event as an engine call. Null for events that don't reach the engine (bookkeeping only). */
-    private fun step(t: Table, engine: GameEngine, g: Game, e: Event, now: Long): Transition? {
+    /**
+     * One player event, already decrypted to [body], as an engine call. Null for events that
+     * don't reach the engine (bookkeeping only).
+     */
+    private fun step(t: Table, engine: GameEngine, g: Game, e: Event, body: String, now: Long): Transition? {
         val who = e.pubkey
         return when (e.kind) {
-            Kinds.POSITION -> engine.reportLocation(g, who, Nostr.json.decodeFromString(Position.serializer(), e.content).fix())
-            Kinds.BLE_KEY -> { t.bleKeys[who] = e.content.hex(); null }
-            Kinds.ACTION -> when (val a = Nostr.json.decodeFromString(Action.serializer(), e.content)) {
+            Kinds.POSITION -> engine.reportLocation(g, who, Nostr.json.decodeFromString(Position.serializer(), body).fix())
+            Kinds.BLE_KEY -> { t.bleKeys[who] = body.hex(); t.hold(Secret("ble", who, null, body, salt(e))); null }
+            Kinds.ACTION -> when (val a = Nostr.json.decodeFromString(Action.serializer(), body)) {
                 is Action.Open -> null
                 is Action.Join -> User(who, a.name, a.selfie).also { t.names[who] = it }.let { engine.join(g, it) }
                 is Action.CoCaptains -> engine.appointCoCaptains(g, who, a.picks)
-                is Action.PlaceFlag -> engine.placeFlag(g, who, a.venue, a.kind, a.address, GeoPoint(a.lat, a.lng), a.photo.toModel(), now)
+                is Action.PlaceFlag -> engine.placeFlag(g, who, a.venue, a.kind, a.address, GeoPoint(a.lat, a.lng), a.photo.toModel(), now).also {
+                    if (it.verdict !is Verdict.Rejected) {
+                        val photoHash = Nostr.sha256(a.photo.image.toByteArray()).toHex()
+                        t.hold(Secret("flag", who, g.players[who]?.team?.name, "${a.lat},${a.lng},$photoHash", salt(e)))
+                    }
+                }
                 is Action.PlaceJail -> engine.placeJail(g, who, a.venue, a.address, GeoPoint(a.lat, a.lng), a.photo.toModel(), now)
                 is Action.Capture -> engine.captureFlag(g, who, a.photo.toModel(), now)
                 is Action.Jailbreak -> engine.jailbreak(g, who, a.photo.toModel(), now)
@@ -154,6 +175,15 @@ class Referee(
             else -> null
         }
     }
+
+    private fun Table.hold(s: Secret) { secrets += s; uncommitted += s }
+
+    /**
+     * A commitment's salt: private to this referee, yet the same on every replay, so a restored
+     * referee reveals what the live one committed to. Derived from the seed it would be public.
+     */
+    private fun salt(e: Event): String =
+        Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(keys.secret, "HmacSHA256")) }.doFinal(e.id.hex()).toHex()
 
     /**
      * BLE tokens are `HMAC(k, window)` truncated to 8 bytes, where `k` is the player's key

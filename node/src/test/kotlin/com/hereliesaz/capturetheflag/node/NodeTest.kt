@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -23,6 +24,7 @@ import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -78,8 +80,11 @@ class NodeTest {
         }
     }
 
-    private fun action(k: Keys, a: Action, game: String? = null, city: String? = null) =
-        k.sign(Kinds.ACTION, Nostr.json.encodeToString(Action.serializer(), a), listOfNotNull(game?.let { listOf("g", it) }, city?.let { listOf("c", it) }))
+    /** A player's action: plaintext when opening a city, sealed to [referee] inside a game. */
+    private fun action(k: Keys, a: Action, game: String? = null, city: String? = null, referee: String? = null): Event {
+        val body = Nostr.json.encodeToString(Action.serializer(), a)
+        return k.sign(Kinds.ACTION, referee?.let { Nip44.seal(body, k, it) } ?: body, listOfNotNull(game?.let { listOf("g", it) }, city?.let { listOf("c", it) }))
+    }
 
     @Test fun refereeRunsARoundFromSignedActionsAndTheLogRebuildsIt() = runTest {
         var now = 1_000_000L
@@ -95,12 +100,17 @@ class NodeTest {
         assertTrue(opened.all { it.pubkey == node.pub })
 
         players.forEachIndexed { i, p ->
-            val e = action(p, Action.Join("P$i", "selfie$i"), game)
+            val e = action(p, Action.Join("P$i", "selfie$i"), game, referee = node.pub)
             store.add(e); referee.accept(e)
         }
         // An action with a bad signature never reaches the store, so never reaches a batch.
+        // One sent in the clear is refused: in a game, only the referee reads what players send.
+        val clear = action(Keys.generate(), Action.Join("Loud", "selfie"), game)
+        store.add(clear); referee.accept(clear)
         referee.flush()
         assertEquals(4, referee.games.getValue(game).signups.size)
+        val first = store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).single()
+        assertEquals("unreadable", Nostr.json.decodeFromString(Outcome.serializer(), first.content).verdicts[clear.id])
 
         now += GameRules.SIGNUP_WINDOW
         referee.flush()
@@ -118,6 +128,68 @@ class NodeTest {
         val rebuilt = again.games.getValue(game)
         assertEquals(g.players.mapValues { it.value.team to it.value.role }, rebuilt.players.mapValues { it.value.team to it.value.role })
         assertEquals(g.phase, rebuilt.phase)
+    }
+
+    @Test fun secretsAreCommittedDuringTheRoundAndRevealedAfter() = runTest {
+        var now = 1_000_000L
+        val store = EventStore()
+        val node = Keys.generate()
+        val referee = Referee(node, store, DemoCityDirectory) { now }
+        val players = (1..4).map { Keys.generate() }
+        referee.accept(action(players[0], Action.Open("New Orleans"), city = "new orleans"))
+        val game = referee.games.keys.single()
+        suspend fun send(e: Event) { store.add(e); referee.accept(e) }
+        players.forEachIndexed { i, p -> send(action(p, Action.Join("P$i", "s$i"), game, referee = node.pub)) }
+        val k = ByteArray(32) { 7 }.toHex()
+        send(players[0].sign(Kinds.BLE_KEY, Nip44.seal(k, players[0], node.pub), listOf(listOf("g", game))))
+        referee.flush()
+
+        assertTrue(store.query(listOf(Filter())).none { k in it.content }, "the key never appears in the clear")
+        val commit = Nostr.json.decodeFromString(Commit.serializer(), store.query(listOf(Filter(kinds = setOf(Kinds.COMMIT)))).single().content)
+        assertEquals("ble" to players[0].pub, commit.what to commit.who)
+        assertTrue(store.query(listOf(Filter(kinds = setOf(Kinds.REVEAL)))).isEmpty())
+
+        // Nobody places a flag: the round ends at the placement deadline, and the secrets come out.
+        now += GameRules.SIGNUP_WINDOW; referee.flush()
+        now += 3 * GameRules.HOUR; referee.flush()
+        assertIs<GamePhase.Ended>(referee.games.getValue(game).phase)
+        val revealed = Nostr.json.decodeFromString(Reveal.serializer(), store.query(listOf(Filter(kinds = setOf(Kinds.REVEAL)))).single().content).secrets.single()
+        assertEquals(k, revealed.preimage)
+        assertEquals(commit.commitment, revealed.commitment, "the reveal matches what was committed")
+    }
+
+    @Test fun nip44MatchesTheOfficialVectors() {
+        // github.com/paulmillr/nip44 nip44.vectors.json
+        val v = Nostr.json.parseToJsonElement(javaClass.getResource("/nip44.vectors.json")!!.readText()).jsonObject["v2"]!!.jsonObject
+        val valid = v["valid"]!!.jsonObject
+        fun kotlinx.serialization.json.JsonElement.s(key: String) = jsonObject[key]!!.jsonPrimitive.content
+        valid["get_conversation_key"]!!.jsonArray.forEach {
+            assertEquals(it.s("conversation_key"), Nip44.conversationKey(it.s("sec1").hex(), it.s("pub2")).toHex())
+        }
+        valid["calc_padded_len"]!!.jsonArray.forEach {
+            assertEquals(it.jsonArray[1].jsonPrimitive.content.toInt(), Nip44.paddedLength(it.jsonArray[0].jsonPrimitive.content.toInt()))
+        }
+        valid["encrypt_decrypt"]!!.jsonArray.forEach {
+            val ck = Nip44.conversationKey(it.s("sec1").hex(), Keys(it.s("sec2").hex()).pub)
+            assertEquals(it.s("conversation_key"), ck.toHex())
+            assertEquals(it.s("payload"), Nip44.encrypt(it.s("plaintext"), ck, it.s("nonce").hex()))
+            assertEquals(it.s("plaintext"), Nip44.decrypt(it.s("payload"), ck))
+        }
+        val invalid = v["invalid"]!!.jsonObject
+        invalid["decrypt"]!!.jsonArray.forEach {
+            assertFails(it.s("note")) { Nip44.decrypt(it.s("payload"), it.s("conversation_key").hex()) }
+        }
+        invalid["get_conversation_key"]!!.jsonArray.forEach {
+            assertFails(it.s("note")) { Nip44.conversationKey(it.s("sec1").hex(), it.s("pub2")) }
+        }
+    }
+
+    @Test fun sealedPayloadsOpenOnlyForTheirRecipient() {
+        val (a, b, eve) = List(3) { Keys.generate() }
+        val sealed = Nip44.seal("ping 6: the corner of Frenchmen", a, b.pub)
+        assertEquals("ping 6: the corner of Frenchmen", Nip44.open(sealed, b, a.pub))
+        assertFails { Nip44.open(sealed, eve, a.pub) }
+        assertFalse(sealed == Nip44.seal("ping 6: the corner of Frenchmen", a, b.pub), "fresh nonce every time")
     }
 
     @Test fun bleTokensRotateAndResolve() {
