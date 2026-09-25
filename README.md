@@ -35,6 +35,8 @@ Rivalries come from shared history (`commentary/Rivalry.kt`): every tag pairs a 
 
 It brings up careers (`commentary/Career.kt`, read off the ledger): rookies, past captures and where, career tags, longest survival, biggest breakout, disqualifications, wins, high levels, winning and losing streaks, and how fast someone has climbed (or hasn't). Sometimes, not every line. Level-ups are called live as points land, with the big call when a milestone brings a new advantage.
 
+**Highlights log.** The engine records the moments the points ledger can't (`Highlight` in `model/Models.kt`): near misses, Last Stands, decoys and how far they walked, vanishes, interrogations, bounties cashed, jail check-ins and how close to the deadline, abandoned breakouts, paroles, tripwires. The backend keeps them for good. Live, the booth calls the public ones (a missed shot, a check-in with seconds to spare, a bounty cashed). Decoys, vanishes, interrogations and tripwires are secret: never aired during their round, fair game in every round after. From past rounds it tells stories ("who once walked a decoy 6 blocks through Chicago") and folds them into rivalries ("Remember Memphis? Name2 made a Last Stand and threw Name4's photo right out").
+
 What it never says: coordinates, distances, the flag's venue or address.
 
 ## Jail

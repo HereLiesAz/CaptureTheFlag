@@ -230,3 +230,44 @@ data class Award(
     val reason: String,
     val at: Millis,
 )
+
+/** What kind of moment a [Highlight] records. */
+enum class HighlightKind {
+    /** A tag attempt on an opponent that failed its checks. [Highlight.other] is the target. */
+    NEAR_MISS,
+    /** A tag thrown out by Last Stand. [Highlight.user] made the stand, [Highlight.other] took the photo. */
+    LAST_STAND,
+    /** A decoy sent. [Highlight.value] is how many extra waypoints it walked. Secret until the round ends. */
+    DECOY,
+    /** A scheduled ping swallowed. Secret until the round ends. */
+    VANISH,
+    /** A forced private ping. [Highlight.other] is the intruder. Secret until the round ends. */
+    INTERROGATION,
+    /** A tag paid out on a Bounty. [Highlight.other] is the prisoner, [Highlight.value] the multiplier ×10. */
+    BOUNTY_COLLECTED,
+    /** A jail report completed. [Highlight.value] is seconds to spare before the deadline. */
+    REPORTED,
+    /** A breakout abandoned. [Highlight.value] is minutes held before leaving. */
+    BREAKOUT_ABANDONED,
+    /** Released by Parole. */
+    PAROLE,
+    /** A Tripwire alarm. [Highlight.user] is the defender, [Highlight.other] the intruder. Secret until the round ends. */
+    TRIPWIRE,
+}
+
+/**
+ * A moment worth remembering that the points ledger does not capture. Kept for good, so the
+ * booth can bring it up in later rounds. [secret] moments must not be aired while their round
+ * is still being played.
+ */
+data class Highlight(
+    val kind: HighlightKind,
+    val user: PlayerId,
+    val other: PlayerId? = null,
+    val game: GameId,
+    val city: CityId,
+    val at: Millis,
+    val value: Int = 0,
+) {
+    val secret: Boolean get() = kind in setOf(HighlightKind.DECOY, HighlightKind.VANISH, HighlightKind.INTERROGATION, HighlightKind.TRIPWIRE)
+}

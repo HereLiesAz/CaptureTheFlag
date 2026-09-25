@@ -15,6 +15,7 @@ import com.hereliesaz.capturetheflag.model.Award
 import com.hereliesaz.capturetheflag.model.City
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
+import com.hereliesaz.capturetheflag.model.Highlight
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.Millis
@@ -82,20 +83,28 @@ class InMemoryBackend(
         val result = t(ticked.game)
         result.pings.forEach { pingBus.tryEmit(it) }
         _ledger.update { it + ticked.awards + result.awards }
+        _highlights.update { it + ticked.highlights + result.highlights }
         (ticked.notices + result.notices).forEach { announce(flow.value?.city ?: g.city, it) }
         flow.value = result.game
-        broadcast(city, g, result.game, ticked.awards + result.awards, ticked.notices + result.notices)
+        broadcast(city, g, result.game, ticked.awards + result.awards, ticked.notices + result.notices, ticked.highlights + result.highlights)
         return result.verdict
     }
 
+    private val _highlights = MutableStateFlow<List<Highlight>>(emptyList())
+    override val highlights: StateFlow<List<Highlight>> = _highlights.asStateFlow()
+
+    private fun liveGames() = games.values.mapNotNull { it.value?.takeIf { g -> g.phase !is GamePhase.Ended }?.id }.toSet()
+    private fun cityLabel(id: String) = games.values.mapNotNull { it.value?.city }.firstOrNull { it.id == id }?.name
+        ?: id.replaceFirstChar { c -> c.uppercase() }
+
     private val booth = Commentator(
         random = random,
-        career = { id ->
-            val live = games.values.mapNotNull { it.value?.id }.toSet()
-            val names = games.values.mapNotNull { it.value?.city }.associate { it.id to it.name }
-            Career.from(_ledger.value, id, live) { names[it] ?: it.replaceFirstChar { c -> c.uppercase() } }
-        },
+        career = { id -> Career.from(_ledger.value, id, liveGames(), ::cityLabel) },
         rivalry = { a, b -> HeadToHead.between(_ledger.value, a, b) },
+        // Past rounds only: a decoy or vanish from the round still being played stays secret.
+        antics = { id -> liveGames().let { live -> _highlights.value.filter { it.user == id && it.game !in live } } },
+        nameOf = { id -> users[id]?.displayName },
+        cityName = ::cityLabel,
     )
     private val feeds = mutableMapOf<String, MutableStateFlow<List<Commentary>>>()
     private val lastLook = mutableMapOf<String, Millis>()
@@ -103,10 +112,17 @@ class InMemoryBackend(
     private fun feed(city: String) = feeds.getOrPut(city.lowercase()) { MutableStateFlow(emptyList()) }
 
     /** Narrates the change, or fills a long silence with colour commentary. */
-    private fun broadcast(city: String, before: Game?, after: Game, awards: List<Award>, notices: List<String>) {
+    private fun broadcast(
+        city: String,
+        before: Game?,
+        after: Game,
+        awards: List<Award>,
+        notices: List<String>,
+        highlights: List<Highlight> = emptyList(),
+    ) {
         val now = clock()
         val key = city.lowercase()
-        var lines = booth.narrate(before, after, awards, notices, now, lastLook[key])
+        var lines = booth.narrate(before, after, awards, notices, now, lastLook[key], highlights)
         lastLook[key] = now
         val last = feed(city).value.lastOrNull()?.at ?: 0L
         if (lines.isEmpty() && now - last >= LULL) lines = listOfNotNull(booth.lull(after, now))
@@ -183,7 +199,7 @@ class InMemoryBackend(
     override suspend fun interrogate(cityName: String, subject: PlayerId) =
         apply(cityName) { engine.interrogate(it, myId(), subject, clock()) }
 
-    override suspend fun vanish(cityName: String) = apply(cityName) { engine.vanish(it, myId()) }
+    override suspend fun vanish(cityName: String) = apply(cityName) { engine.vanish(it, myId(), clock()) }
 
     override suspend fun bounty(cityName: String, target: PlayerId) = apply(cityName) { engine.bounty(it, myId(), target) }
 

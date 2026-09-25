@@ -4,6 +4,8 @@ import com.hereliesaz.capturetheflag.commentary.Career
 import com.hereliesaz.capturetheflag.commentary.Commentator
 import com.hereliesaz.capturetheflag.commentary.HeadToHead
 import com.hereliesaz.capturetheflag.model.Award
+import com.hereliesaz.capturetheflag.model.Highlight
+import com.hereliesaz.capturetheflag.model.HighlightKind
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.geo.DividingLine
 import com.hereliesaz.capturetheflag.geo.GeoPoint
@@ -226,5 +228,47 @@ class CommentatorTest {
         val cold = Commentator(Random(8), career = { Career(points = 500, rounds = 9, streak = -3) })
         assertTrue((1..30).mapNotNull { hot.lull(g, DAY + it * HOUR)?.text }.any { "last 4 rounds" in it })
         assertTrue((1..30).mapNotNull { cold.lull(g, DAY + it * HOUR)?.text }.any { "lost 3 straight" in it || "Patience" in it })
+    }
+
+    @Test fun engineLogsHighlights() {
+        var g = active()
+        val prisoner = g.players.values.first()
+        val jailer = g.team(prisoner.team.opponent).first()
+        val t = DAY + MINUTE
+        g = engine.reportLocation(g, prisoner.id, LocationFix(home(jailer.team), t, 5.0)).game
+        val ble = BleTokenRegistry { k, _ -> if (k == "k") prisoner.id else null }
+        val miss = engine.tag(g, jailer.id, prisoner.id, photo(home(jailer.team), t), t, ble) // no BLE: fails
+        assertEquals(listOf(HighlightKind.NEAR_MISS), miss.highlights.map { it.kind })
+        assertEquals(prisoner.id, miss.highlights.single().other)
+    }
+
+    @Test fun secretsStayOffAirButNearMissesGoOut() {
+        val g = active()
+        val a = g.players.values.first()
+        val b = g.team(a.team.opponent).first()
+        val secret = Highlight(HighlightKind.DECOY, a.id, null, g.id, city.id, DAY, 4)
+        val miss = Highlight(HighlightKind.NEAR_MISS, b.id, a.id, g.id, city.id, DAY)
+        val lines = booth.narrate(g, g, emptyList(), emptyList(), DAY, highlights = listOf(secret, miss)).map { it.text }
+        assertTrue(lines.any { b.user.displayName in it && a.user.displayName in it })
+        assertTrue(lines.none { "decoy" in it.lowercase() })
+    }
+
+    @Test fun pastAnticsAndSharedHistoryComeUp() {
+        var g = active()
+        val prisoner = g.players.values.first()
+        val jailer = g.team(prisoner.team.opponent).first()
+        val past = listOf(Highlight(HighlightKind.LAST_STAND, prisoner.id, jailer.id, "old", "memphis", 1))
+        val booth = Commentator(
+            Random(9),
+            antics = { id -> past.filter { it.user == id } },
+            nameOf = { id -> g.players[id]?.user?.displayName },
+            cityName = { it.replaceFirstChar { c -> c.uppercase() } },
+        )
+        val t = DAY + MINUTE
+        g = engine.reportLocation(g, prisoner.id, LocationFix(home(jailer.team), t, 5.0)).game
+        val ble = BleTokenRegistry { k, _ -> if (k == "k") prisoner.id else null }
+        val tagged = engine.tag(g, jailer.id, prisoner.id, photo(home(jailer.team), t, listOf(BleSighting("k", t, -50))), t, ble)
+        val lines = booth.narrate(g, tagged.game, tagged.awards, tagged.notices, t, highlights = tagged.highlights).map { it.text }
+        assertTrue(lines.any { "Memphis" in it && "Last Stand" in it }, lines.joinToString("\n"))
     }
 }

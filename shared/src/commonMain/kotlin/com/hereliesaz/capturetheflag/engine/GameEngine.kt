@@ -10,6 +10,8 @@ import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.GameId
 import com.hereliesaz.capturetheflag.model.GamePhase
+import com.hereliesaz.capturetheflag.model.Highlight
+import com.hereliesaz.capturetheflag.model.HighlightKind
 import com.hereliesaz.capturetheflag.model.Incursion
 import com.hereliesaz.capturetheflag.model.Jail
 import com.hereliesaz.capturetheflag.model.LocationFix
@@ -48,9 +50,11 @@ data class Transition(
     val awards: List<Award> = emptyList(),
     /** Public announcements for the city channel. */
     val notices: List<String> = emptyList(),
+    /** Moments for the permanent highlights log. */
+    val highlights: List<Highlight> = emptyList(),
 ) {
     operator fun plus(next: Transition) = Transition(
-        next.game, next.verdict, pings + next.pings, awards + next.awards, notices + next.notices,
+        next.game, next.verdict, pings + next.pings, awards + next.awards, notices + next.notices, highlights + next.highlights,
     )
 }
 
@@ -172,6 +176,7 @@ class GameEngine(
         val open = g.incursions[player]
         val pings = mutableListOf<Ping>()
         val awards = mutableListOf<Award>()
+        val highlights = mutableListOf<Highlight>()
 
         if (inEnemy && open == null) {
             // Threshold: the incursion (and its first ping) only starts once the grace runs out.
@@ -180,6 +185,7 @@ class GameEngine(
             val tripped = tripwires(g, p, fix.point).filter { it.level >= p.level }.map { it.id }.toSet()
             if (tripped.isNotEmpty()) {
                 pings += Ping(player, 0, fix.point, fix.at, null, tripped, PingKind.TRIPWIRE, subjectLevel = p.level)
+                highlights += tripped.map { g.highlight(HighlightKind.TRIPWIRE, it, player, fix.at) }
             }
         } else if (!inEnemy && open != null) {
             g = g.copy(incursions = g.incursions - player, vanishPending = g.vanishPending - player)
@@ -200,7 +206,7 @@ class GameEngine(
         }
         g = g.copy(trails = trails)
         val held = holdBreakout(g, g.players.getValue(player), fix)
-        return (held + Transition(held.game, pings = pings, awards = mentored(held.game, awards)) + duePings(held.game, fix.at)).settled()
+        return (held + Transition(held.game, pings = pings, awards = mentored(held.game, awards), highlights = highlights) + duePings(held.game, fix.at)).settled()
     }
 
     /**
@@ -219,6 +225,9 @@ class GameEngine(
         return Transition(
             game.copy(players = game.players + (p.id to updated)),
             notices = if (done) listOf("${p.user.displayName} reported to jail.") else emptyList(),
+            highlights = if (done) listOf(game.highlight(
+                HighlightKind.REPORTED, p.id, null, fix.at, (((p.jailDeadline ?: fix.at) - fix.at) / 1000).toInt(),
+            )) else emptyList(),
         )
     }
 
@@ -343,7 +352,7 @@ class GameEngine(
             decoysUsed = game.decoysUsed + (by to used + 1),
             decoyWalks = if (walk.isEmpty()) game.decoyWalks else game.decoyWalks + DecoyWalk(by, walk, now + DECOY_STEP),
         )
-        return Transition(g, pings = listOf(decoyPing(g, p, at, now)))
+        return Transition(g, pings = listOf(decoyPing(g, p, at, now)), highlights = listOf(g.highlight(HighlightKind.DECOY, by, null, now, walk.size)))
     }
 
     private fun decoyPing(game: Game, sender: Player, at: GeoPoint, now: Millis): Ping {
@@ -407,18 +416,25 @@ class GameEngine(
             s.user.takeIf { PingSchedule.identifies(max(1, inc.pingsSent), perks(s)) },
             setOf(by), PingKind.INTERROGATION, r, s.level,
         )
-        return Transition(game.copy(interrogationsUsed = game.interrogationsUsed + (by to used + 1)), pings = listOf(ping))
+        return Transition(
+            game.copy(interrogationsUsed = game.interrogationsUsed + (by to used + 1)),
+            pings = listOf(ping),
+            highlights = listOf(game.highlight(HighlightKind.INTERROGATION, by, subject, now)),
+        )
     }
 
     /** Swallows the caller's next scheduled incursion ping. */
-    fun vanish(game: Game, by: PlayerId): Transition {
+    fun vanish(game: Game, by: PlayerId, now: Millis = 0): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
         val p = game.players[by] ?: return game.reject("Not in this game")
         if (by !in game.incursions) return game.reject("Only on enemy ground")
         if (by in game.vanishPending) return game.reject("Already vanishing")
         val used = game.vanishesUsed[by] ?: 0
         if (used >= perks(p).vanishesPerGame) return game.reject("No vanishes left")
-        return Transition(game.copy(vanishesUsed = game.vanishesUsed + (by to used + 1), vanishPending = game.vanishPending + by))
+        return Transition(
+            game.copy(vanishesUsed = game.vanishesUsed + (by to used + 1), vanishPending = game.vanishPending + by),
+            highlights = listOf(game.highlight(HighlightKind.VANISH, by, null, now)),
+        )
     }
 
     /** Marks one enemy per round; jailing them pays the marker's Bounty multiplier to the whole team. */
@@ -450,7 +466,12 @@ class GameEngine(
     ): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
         val v = Verification.tag(game, by, target, photo, now, ble)
-        if (v != Verdict.Valid) return Transition(game, v)
+        if (v != Verdict.Valid) {
+            val t = game.players[by]
+            val o = game.players[target]
+            val real = t != null && o != null && t.team != o.team && !t.isJailed && !o.isJailed
+            return Transition(game, v, highlights = if (real) listOf(game.highlight(HighlightKind.NEAR_MISS, by, target, now)) else emptyList())
+        }
         val victim = game.players.getValue(target)
         val tagger = game.players.getValue(by)
 
@@ -461,6 +482,7 @@ class GameEngine(
                 game.copy(lastStandsUsed = game.lastStandsUsed + (target to stands + 1)),
                 Verdict.Rejected("${victim.user.displayName} made a Last Stand"),
                 notices = listOf("${victim.user.displayName} made a Last Stand against ${tagger.user.displayName}."),
+                highlights = listOf(game.highlight(HighlightKind.LAST_STAND, target, by, now)),
             )
         }
 
@@ -479,7 +501,10 @@ class GameEngine(
             vanishPending = game.vanishPending - target,
             scoredTags = game.scoredTags + key,
         )
-        return Transition(g, awards = mentored(g, awards))
+        val bounty = if (multiplier > 1.0 && awards.isNotEmpty()) {
+            listOf(game.highlight(HighlightKind.BOUNTY_COLLECTED, by, target, now, (multiplier * 10).toInt()))
+        } else emptyList()
+        return Transition(g, awards = mentored(g, awards), highlights = bounty)
     }
 
     private fun parole(game: Game, now: Millis): Transition {
@@ -491,6 +516,7 @@ class GameEngine(
         return Transition(
             game.copy(players = game.players + due.associate { it.id to it.freed() }),
             notices = due.map { "${it.user.displayName} is out on parole." },
+            highlights = due.map { game.highlight(HighlightKind.PAROLE, it.id, null, now) },
         )
     }
 
@@ -524,7 +550,10 @@ class GameEngine(
         val jail = game.jails[rescuer.team.opponent]
         val there = jail != null && fix.accuracyM <= GameRules.MAX_FIX_ACCURACY_M &&
             fix.point.distanceTo(jail.location) <= GameRules.JAIL_REPORT_RADIUS_M
-        if (!there) return Transition(game.copy(players = game.players + (rescuer.id to rescuer.copy(breakoutSince = null))))
+        if (!there) return Transition(
+            game.copy(players = game.players + (rescuer.id to rescuer.copy(breakoutSince = null))),
+            highlights = listOf(game.highlight(HighlightKind.BREAKOUT_ABANDONED, rescuer.id, null, fix.at, ((fix.at - since) / GameRules.MINUTE).toInt())),
+        )
         if (fix.at - since < GameRules.JAILBREAK_HOLD) return Transition(game)
         val done = game.copy(players = game.players + (rescuer.id to rescuer.copy(breakoutSince = null)))
         val freed = done.team(rescuer.team).filter { it.isJailed && !it.disqualified }
@@ -596,6 +625,9 @@ class GameEngine(
 
     private fun Game.award(user: PlayerId, points: Long, reason: String, at: Millis) =
         Award(user, city.id, id, points, reason, at)
+
+    private fun Game.highlight(kind: HighlightKind, user: PlayerId, other: PlayerId?, at: Millis, value: Int = 0) =
+        Highlight(kind, user, other, id, city.id, at, value)
 
     private fun Game.reject(reason: String) = Transition(this, Verdict.Rejected(reason))
 

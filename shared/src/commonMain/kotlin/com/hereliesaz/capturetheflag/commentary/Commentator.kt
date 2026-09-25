@@ -3,6 +3,8 @@ package com.hereliesaz.capturetheflag.commentary
 import com.hereliesaz.capturetheflag.geo.distanceTo
 import com.hereliesaz.capturetheflag.model.Award
 import com.hereliesaz.capturetheflag.model.Game
+import com.hereliesaz.capturetheflag.model.Highlight
+import com.hereliesaz.capturetheflag.model.HighlightKind
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.Outcome
@@ -32,6 +34,12 @@ class Commentator(
     private val career: (PlayerId) -> Career = { Career.NONE },
     /** Who has jailed whom between two players, across every round including this one. */
     private val rivalry: (PlayerId, PlayerId) -> HeadToHead = { _, _ -> HeadToHead.NONE },
+    /** A player's highlights from finished rounds only. Never the round in play: decoys stay secret. */
+    private val antics: (PlayerId) -> List<Highlight> = { emptyList() },
+    /** Display name for anyone, including players not in this round. */
+    private val nameOf: (PlayerId) -> String? = { null },
+    /** Display name for a city id. */
+    private val cityName: (String) -> String = { it },
 ) {
     /** Per-player speculation memory: when the booth last guessed, and the distances it guessed from. */
     private data class Hunch(val at: Millis, val toFlag: Double, val toJail: Double)
@@ -50,6 +58,7 @@ class Commentator(
         notices: List<String>,
         now: Millis,
         previousNow: Millis? = null,
+        highlights: List<Highlight> = emptyList(),
     ): List<Commentary> {
         val lines = mutableListOf<String>()
         if (before == null || before.id != after.id) {
@@ -72,6 +81,7 @@ class Commentator(
             pick("$it The photo is thrown out. The crowd is not sure whether to cheer.", "$it Denied. You don't see that twice in a career. Maybe once.")
         }
         lines += levelUps(after, awards)
+        lines += moments(after, highlights)
         if (previousNow != null) lines += clock(after, previousNow, now)
         return lines.stamp(now)
     }
@@ -292,7 +302,8 @@ class Commentator(
                 val h = rivalry(d.id, id)
                 val hunter = d.user.displayName
                 val target = prey.user.displayName
-                add(if (h.isRivalry) pick(
+                val memory = sharedHistory(d, prey)
+                add(if (!h.isRivalry && memory != null) "$hunter is closing on $target. $memory" else if (h.isRivalry) pick(
                     "$hunter and $target. Again. $hunter has put $target away ${times(h.aJailedB)}, $target has returned the favor ${times(h.bJailedA)}, and right now $hunter is closing.",
                     "Here we go. $hunter is moving on $target, and these two have history: ${h.aJailedB} to ${h.bJailedA}. Grudges don't need GPS.",
                 ) else pick(
@@ -307,7 +318,7 @@ class Commentator(
     /** On a tag: the head-to-head, including the tag just made, if these two have a past. */
     private fun rivalryOnTag(tagger: Player, prisoner: Player): String? {
         val h = rivalry(tagger.id, prisoner.id)
-        if (h.total < 2) return null
+        if (h.total < 2) return sharedHistory(tagger, prisoner)?.let { " $it" }
         val t = tagger.user.displayName
         val p = prisoner.user.displayName
         return when {
@@ -343,6 +354,75 @@ class Commentator(
                 else -> pick("$name ticks up to level $to.", "Level $to for $name. The climb continues.")
             }
         }
+
+    /**
+     * Live calls from this transition's highlights. Secret kinds (decoys, vanishes,
+     * interrogations, tripwires) are never aired live; they wait for later rounds.
+     */
+    private fun moments(a: Game, highlights: List<Highlight>): List<String> = highlights.filterNot { it.secret }.mapNotNull { h ->
+        val who = a.players[h.user]?.user?.displayName ?: return@mapNotNull null
+        val other = h.other?.let { a.players[it]?.user?.displayName }
+        when (h.kind) {
+            HighlightKind.NEAR_MISS -> other?.let {
+                val past = antics(h.user).count { x -> x.kind == HighlightKind.NEAR_MISS && x.other == h.other }
+                pick(
+                    "$who takes the shot at $it and... NO! The booth says no. Somebody wasn't close enough.",
+                    "$who thought they had $it. They did not have $it.",
+                ) + if (past > 0) " That's ${times(past + 1)} now $who has come up empty on $it." else ""
+            }
+            HighlightKind.REPORTED -> if (h.value <= 180) "$who checks in with ${h.value} seconds to spare. You could hear the whole city exhale." else null
+            HighlightKind.BOUNTY_COLLECTED -> other?.let { "And that's a bounty collected: $who cashes $it at ×${h.value / 10.0}." }
+            else -> null
+        }
+    }
+
+    /** The best story from a player's past rounds, as a clause, or null. */
+    private fun anecdote(id: PlayerId): String? {
+        val past = antics(id)
+        fun name(x: PlayerId?) = x?.let(nameOf) ?: "someone"
+        val options = buildList {
+            past.filter { it.kind == HighlightKind.LAST_STAND }.maxByOrNull { it.at }?.let {
+                add("who once threw out ${name(it.other)}'s photo with a Last Stand in ${cityName(it.city)}")
+            }
+            past.filter { it.kind == HighlightKind.DECOY }.maxByOrNull { it.value }?.let {
+                add(if (it.value >= 3) "who once walked a decoy ${it.value} blocks through ${cityName(it.city)} and had half a team chasing it" else "who has been known to send a decoy or two")
+            }
+            if (past.any { it.kind == HighlightKind.VANISH }) add("who has vanished off the pings before, mid-incursion")
+            past.filter { it.kind == HighlightKind.REPORTED && it.value <= 60 }.minByOrNull { it.value }?.let {
+                add("who once reported to jail with ${it.value} seconds to spare")
+            }
+            past.filter { it.kind == HighlightKind.BREAKOUT_ABANDONED }.maxByOrNull { it.value }?.let {
+                add("who once walked off a breakout ${it.value} minutes in")
+            }
+            past.filter { it.kind == HighlightKind.TRIPWIRE }.maxByOrNull { it.at }?.let {
+                add("whose tripwire caught ${name(it.other)} cold in ${cityName(it.city)}")
+            }
+            past.filter { it.kind == HighlightKind.BOUNTY_COLLECTED }.maxByOrNull { it.at }?.let {
+                add("who once cashed a bounty on ${name(it.other)}")
+            }
+            past.count { it.kind == HighlightKind.NEAR_MISS }.takeIf { it >= 3 }?.let { add("$it missed shots on record, and still shooting") }
+            if (past.count { it.kind == HighlightKind.PAROLE } >= 2) add("paroled more than once, which says something about someone")
+        }
+        return options.randomOrNull(random)
+    }
+
+    /** A remembered moment between two specific players from past rounds, as a sentence, or null. */
+    private fun sharedHistory(a: Player, b: Player): String? {
+        val an = a.user.displayName
+        val bn = b.user.displayName
+        val between = antics(a.id).filter { it.other == b.id }.map { it to true } + antics(b.id).filter { it.other == a.id }.map { it to false }
+        val (h, aFirst) = between.maxByOrNull { it.first.at } ?: return null
+        val (x, y) = if (aFirst) an to bn else bn to an
+        val where = cityName(h.city)
+        return when (h.kind) {
+            HighlightKind.LAST_STAND -> "Remember $where? $x made a Last Stand and threw $y's photo right out."
+            HighlightKind.NEAR_MISS -> "Last time, in $where, $x had $y in the frame and the phones never met."
+            HighlightKind.TRIPWIRE -> "Back in $where, $x's tripwire went off the second $y crossed."
+            HighlightKind.INTERROGATION -> "In $where, $x interrogated $y right off the map."
+            HighlightKind.BOUNTY_COLLECTED -> "$x has cashed a bounty on $y before. In $where. $y remembers."
+            else -> null
+        }
+    }
 
     private fun times(n: Int) = when (n) { 0 -> "never"; 1 -> "once"; 2 -> "twice"; else -> "$n times" }
 
@@ -403,7 +483,8 @@ class Commentator(
             if (c.rounds in 1..5 && c.pace >= 3.0) add("already level ${c.level} after ${c.rounds} ${if (c.rounds == 1) "round" else "rounds"}, a climb like that doesn't happen by accident")
             if (c.rounds >= 8 && c.level <= 5) add("${c.rounds} rounds in and still level ${c.level}. Patience is also a sport")
         }
-        return options.randomOrNull(random)
+        val story = anecdote(p.id)
+        return (if (story != null && random.nextBoolean()) story else options.randomOrNull(random)) ?: story
     }
 
     private fun pick(vararg options: String) = options[random.nextInt(options.size)]
