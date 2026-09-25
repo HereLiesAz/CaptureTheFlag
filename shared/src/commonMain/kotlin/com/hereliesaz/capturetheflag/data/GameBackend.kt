@@ -41,7 +41,12 @@ interface GameBackend {
         photo: PhotoEvidence,
     ): Verdict
 
+    suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence): Verdict
+
     suspend fun captureFlag(cityName: String, photo: PhotoEvidence): Verdict
+
+    /** Photograph the enemy jail to free every jailed teammate. */
+    suspend fun jailbreak(cityName: String, photo: PhotoEvidence): Verdict
     suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence): Verdict
 
     suspend fun reportLocation(cityName: String, fix: LocationFix)

@@ -23,6 +23,7 @@ import com.hereliesaz.capturetheflag.rules.BleTokenRegistry
 import com.hereliesaz.capturetheflag.rules.CityCell
 import com.hereliesaz.capturetheflag.rules.CityPartitioner
 import com.hereliesaz.capturetheflag.rules.GameRules
+import com.hereliesaz.capturetheflag.rules.JailRules
 import com.hereliesaz.capturetheflag.rules.Leaderboard
 import com.hereliesaz.capturetheflag.rules.Verdict
 import kotlinx.coroutines.flow.Flow
@@ -47,6 +48,8 @@ class InMemoryBackend(
     private val directory: CityDirectory,
     private val clock: () -> Millis,
     private val random: Random = Random.Default,
+    private val travel: TravelTimeEstimator = HeuristicTravel,
+    private val weather: WeatherFactor = NoWeather,
 ) : GameBackend {
     private val _ledger = MutableStateFlow<List<Award>>(emptyList())
     override val ledger: StateFlow<List<Award>> = _ledger.asStateFlow()
@@ -109,11 +112,25 @@ class InMemoryBackend(
         cityName: String, venueName: String, kind: FlagVenueKind, address: String, venue: GeoPoint, photo: PhotoEvidence,
     ) = apply(cityName) { engine.placeFlag(it, myId(), venueName, kind, address, venue, photo, clock()) }
 
+    override suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence) =
+        apply(cityName) { engine.placeJail(it, myId(), venueName, address, venue, photo, clock()) }
+
+    override suspend fun jailbreak(cityName: String, photo: PhotoEvidence) =
+        apply(cityName) { engine.jailbreak(it, myId(), photo, clock()) }
+
     override suspend fun captureFlag(cityName: String, photo: PhotoEvidence) =
         apply(cityName) { engine.captureFlag(it, myId(), photo, clock()) }
 
-    override suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence) =
-        apply(cityName) { engine.tag(it, myId(), target, photo, clock(), bleRegistry) }
+    override suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence): Verdict {
+        // Report window from where the target stands to the jail they must reach.
+        val g = slot(cityName).value
+        val from = g?.lastFix?.get(target)?.point
+        val jail = g?.players?.get(target)?.let { g.jails[it.team.opponent] }?.location
+        val window = if (from != null && jail != null) {
+            JailRules.reportWindow(travel.travelMs(from, jail, clock()), weather.at(from, clock()))
+        } else GameRules.HOUR
+        return apply(cityName) { engine.tag(it, myId(), target, photo, clock(), bleRegistry, window) }
+    }
 
     override suspend fun reportLocation(cityName: String, fix: LocationFix) {
         apply(cityName) { engine.reportLocation(it, myId(), fix) }

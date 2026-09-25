@@ -11,12 +11,27 @@ A city, cut in half. Two teams. Seven days. One photograph ends it.
 | Fewer than 2 sign-ups: round cancelled | `GameEngine.closeSignup` |
 | Random, size-balanced teams; one random captain each; captain names up to 2 co-captains | `rules/TeamAssignment.kt` |
 | Leaders register venue (public space / public building / business), address, and a flag photo with GPS EXIF. Venue must sit inside the team's own territory | `Verification.flagRegistration` |
+| Leaders also register a jail: public, own territory, flag first, at least 400 m from it. Public to both teams. Missing flag or jail at the deadline forfeits | `Verification.jailRegistration` |
 | Win: an opponent photographs the flag within 40 m of its registered location | `Verification.flagCapture` |
 | Jail: photo of an opponent standing in your territory. Photo EXIF must match the target's last fix (60 m), and the target's BLE token must have been heard within 60 s | `Verification.tag` |
 | Incursion pings at entry, +60, +30, +15, +10, +5, then every 5 min. Each goes to a fresh random third (rounded up) of the opposing team. Identity attached from ping 6 | `rules/PingSchedule.kt` |
 | Chat: city-wide (anyone registered, onlookers included), private team room, teammate-only DMs | `chat/Chat.kt` |
 
 Every photo is also checked for freshness (2 min), and its EXIF location against the phone's live fused fix (60 m) to catch doctored metadata.
+
+## Jail
+
+Jail is conceptual, but the report is not.
+
+1. **Tagged.** The prisoner gets a deadline to reach the enemy jail, set by how long the trip takes from where they were caught: the faster of walking and transit, times a weather factor (snow, ice, heat), ×1.25, +10 min, at least 15 min, plus the 5 min report.
+2. **Report.** Stand within 40 m of the jail for 5 unbroken minutes before the deadline. Stepping away restarts the clock. After that they may leave.
+3. **Frozen.** From the tag until release, a prisoner earns no points and cannot capture, tag, or break anyone out.
+4. **Disqualified.** Miss the deadline and they are out for the round: still frozen, never freed, and every point they earned this round is taken back.
+5. **Jailbreak.** A free teammate photographs the enemy jail (40 m, same checks as a flag capture), then holds it: 15 unbroken minutes within 40 m. Leaving, or being jailed, ends the attempt. They are on enemy ground the whole time, so their incursion pings keep running. When the hold completes, every jailed teammate who is not disqualified goes free, reported or still en route. The rescuer earns 20 per player freed.
+6. **Parole** (perk) only applies once the prisoner has reported.
+7. **Final whistle.** The freeze lifts at the end of the round, so reported prisoners share in the win or tie. The disqualified do not.
+
+Travel time is a general estimate, not a live route (`HeuristicTravel` in `data/TravelTime.kt`): straight-line distance × 1.3 for detours, then the faster of walking at 5 km/h or transit at 18 km/h plus 15 min of waiting and walking. `WeatherFactor` scales it for conditions.
 
 ## Points and levels
 
@@ -31,6 +46,8 @@ Every verified event writes an `Award` to a ledger. Levels, perks and both leade
 | Tie | 5 each |
 | Leader whose flag survived a win or tie | 15 |
 | Get home from an incursion unjailed | 2 per ping endured |
+| Jailbreak | 20 per teammate freed |
+| Disqualified | the round's net points, removed |
 
 **Levels** are unlimited. Level *L* needs `50 × (L−1)^2.5` lifetime points, so every level costs more than the last.
 
@@ -99,7 +116,7 @@ Each phone advertises a server-issued token that rotates every 15 minutes over B
 
 - **Backend.** `InMemoryBackend` is single-device, for development only. Needs a real server (Firebase, Supabase, Ktor…) running `GameEngine`.
 - **City data.** `CityDataSource` needs real feeds: census population, OSM buildings/land/water, barrier features. `DemoCityDirectory` is a synthetic New Orleans.
-- **Jailbreak.** The rescue mechanic is not yet specified. `GameEngine.release` is the hook. Parole is the only way out until then.
+- **Weather.** `NoWeather` is a stand-in until a weather source is chosen.
 - **Flag forfeit detection.** How a moved flag is detected (periodic re-photo, challenge by opponents, moderation) is not yet specified. `GameEngine.forfeit` is the hook.
 - **Camera EXIF.** Many stock cameras strip GPS unless location tagging is turned on. An in-app CameraX capture would remove that dependency.
 - **Background location** permission needs its own settings-screen request on Android 11+.

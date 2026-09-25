@@ -34,6 +34,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class PerksTest {
+    private fun jailFor(home: GeoPoint) = GeoPoint(home.lat + if (home.lat > 30.0) 0.02 else -0.02, home.lng)
+
     private val city = City("nola", "New Orleans", Polygon(listOf(
         GeoPoint(29.9, -90.2), GeoPoint(29.9, -90.0), GeoPoint(30.1, -90.0), GeoPoint(30.1, -90.2),
     )))
@@ -56,6 +58,7 @@ class PerksTest {
         for (t in Team.entries) {
             val cap = g.team(t).first { it.role == Role.CAPTAIN }
             g = engine.placeFlag(g, cap.id, "V", FlagVenueKind.PUBLIC_SPACE, "a", home(t), photo(home(t), DAY), DAY).game
+            g = engine.placeJail(g, cap.id, "J", "b", jailFor(home(t)), photo(jailFor(home(t)), DAY), DAY).game
         }
         assertIs<GamePhase.Active>(g.phase)
         return g
@@ -152,16 +155,17 @@ class PerksTest {
         g = g.level(cap, lv(PerkStart.DELIBERATE))
         val other = g.team(cap.team.opponent).first { it.role == Role.CAPTAIN }
         g = engine.placeFlag(g, other.id, "V", FlagVenueKind.BUSINESS, "a", home(other.team), photo(home(other.team), DAY), DAY).game
+        g = engine.placeJail(g, other.id, "J", "b", jailFor(home(other.team)), photo(jailFor(home(other.team)), DAY), DAY).game
         assertIs<GamePhase.FlagPlacement>(engine.tick(g, DAY + HOUR).game.phase)
         val late = engine.tick(g, DAY + HOUR + MINUTE).game.phase
-        assertEquals(Outcome.Forfeit(cap.team, "No flag placed in time"), (late as GamePhase.Ended).outcome)
+        assertEquals(Outcome.Forfeit(cap.team, "No flag and jail placed in time"), (late as GamePhase.Ended).outcome)
     }
 
     @Test fun paroleReleases() {
         var g = active()
         val p = g.players.values.first()
         g = g.level(p, lv(PerkStart.PAROLE))
-        g = g.copy(players = g.players + (p.id to g.p(p.id).copy(jailedAt = DAY)))
+        g = g.copy(players = g.players + (p.id to g.p(p.id).copy(jailedAt = DAY, reportedAt = DAY)))
         val ms = Progression.perksFor(g.p(p.id).level).paroleMs!!
         assertTrue(engine.tick(g, DAY + ms - 1).game.p(p.id).isJailed)
         val out = engine.tick(g, DAY + ms)

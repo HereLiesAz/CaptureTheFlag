@@ -11,6 +11,7 @@ import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.GameId
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.Incursion
+import com.hereliesaz.capturetheflag.model.Jail
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.Outcome
@@ -80,12 +81,13 @@ class GameEngine(
         is GamePhase.Signup -> if (now < ph.deadline) Transition(game) else closeSignup(game, now)
         is GamePhase.FlagPlacement -> placementTick(game, ph.deadline, now)
         is GamePhase.Active -> if (now >= ph.deadline) end(game, Outcome.Tie, now) else {
-            val paroled = parole(game, now)
+            val judged = disqualifyLate(game, now)
+            val paroled = judged + parole(judged.game, now)
             val walked = paroled + walkDecoys(paroled.game, now)
             walked + duePings(walked.game, now)
         }
         is GamePhase.Ended -> Transition(game)
-    }
+    }.settled()
 
     private fun closeSignup(game: Game, now: Millis): Transition {
         if (game.signups.size < 2 * GameRules.MIN_PLAYERS_PER_TEAM) return end(game, Outcome.Cancelled, now)
@@ -100,10 +102,10 @@ class GameEngine(
         base + (game.team(team).filter { it.isLeader }.maxOfOrNull { perks(it).deliberateMs } ?: 0L)
 
     private fun placementTick(game: Game, base: Millis, now: Millis): Transition {
-        val expired = Team.entries.filter { it !in game.flags && now >= placementDeadline(game, it, base) }
+        val expired = Team.entries.filter { !game.isSetUp(it) && now >= placementDeadline(game, it, base) }
         return when (expired.size) {
             0 -> Transition(game)
-            1 -> end(game, Outcome.Forfeit(expired.single(), "No flag placed in time"), now)
+            1 -> end(game, Outcome.Forfeit(expired.single(), "No flag and jail placed in time"), now)
             else -> end(game, Outcome.Tie, now)
         }
     }
@@ -131,17 +133,40 @@ class GameEngine(
         val v = Verification.flagRegistration(game, by, venue, photo, now)
         if (v != Verdict.Valid) return Transition(game, v)
         val flag = Flag(team, venueName, kind, address, venue, photo, by, now)
-        val placed = game.copy(flags = game.flags + (team to flag))
-        // Both flags down early: start the clock now rather than idling out the hour.
-        return if (placed.flags.size == Team.entries.size) {
-            Transition(placed.copy(phase = GamePhase.Active(now + GameRules.PLAY_WINDOW)))
-        } else Transition(placed)
+        return startIfReady(game.copy(flags = game.flags + (team to flag)), now)
     }
+
+    /** Registers the team jail. Requires the flag first, and must sit well away from it. */
+    fun placeJail(
+        game: Game,
+        by: PlayerId,
+        venueName: String,
+        address: String,
+        venue: GeoPoint,
+        photo: PhotoEvidence,
+        now: Millis,
+    ): Transition {
+        val ph = game.phase as? GamePhase.FlagPlacement ?: return game.reject("Placement window is closed")
+        val team = game.players[by]?.team ?: return game.reject("Not in this game")
+        if (now >= placementDeadline(game, team, ph.deadline)) return game.reject("Placement window is closed")
+        val v = Verification.jailRegistration(game, by, venue, photo, now)
+        if (v != Verdict.Valid) return Transition(game, v)
+        val jail = Jail(team, venueName, address, venue, photo, by, now)
+        return startIfReady(game.copy(jails = game.jails + (team to jail)), now)
+    }
+
+    /** Everything placed early: start the clock now rather than idling out the hour. */
+    private fun startIfReady(game: Game, now: Millis) =
+        if (Team.entries.all { game.isSetUp(it) }) Transition(game.copy(phase = GamePhase.Active(now + GameRules.PLAY_WINDOW)))
+        else Transition(game)
+
+    private fun Game.isSetUp(t: Team) = t in flags && t in jails
 
     /** Ingests a device fix; opens or closes incursions, fires Tripwires and Bloodhound trails. */
     fun reportLocation(game: Game, player: PlayerId, fix: LocationFix): Transition {
         val p = game.players[player] ?: return game.reject("Not in this game")
         var g = game.copy(lastFix = game.lastFix + (player to fix))
+        if (g.phase is GamePhase.Active && p.isJailed) return reportToJail(g.copy(incursions = g.incursions - player), p, fix)
         if (g.phase !is GamePhase.Active || p.isJailed) return Transition(g.copy(incursions = g.incursions - player))
         val inEnemy = g.territory.ownerOf(fix.point) == p.team.opponent
         val open = g.incursions[player]
@@ -174,7 +199,43 @@ class GameEngine(
             }
         }
         g = g.copy(trails = trails)
-        return Transition(g, pings = pings, awards = mentored(g, awards)) + duePings(g, fix.at)
+        val held = holdBreakout(g, g.players.getValue(player), fix)
+        return (held + Transition(held.game, pings = pings, awards = mentored(held.game, awards)) + duePings(held.game, fix.at)).settled()
+    }
+
+    /**
+     * A prisoner's fix. Within range of the enemy jail with a good fix, the hold clock runs;
+     * stepping out resets it. A full hold before the deadline completes the report.
+     */
+    private fun reportToJail(game: Game, p: Player, fix: LocationFix): Transition {
+        if (p.disqualified || p.reportedAt != null) return Transition(game)
+        val jail = game.jails[p.team.opponent] ?: return Transition(game)
+        val there = fix.accuracyM <= GameRules.MAX_FIX_ACCURACY_M &&
+            fix.point.distanceTo(jail.location) <= GameRules.JAIL_REPORT_RADIUS_M
+        val since = if (there) p.reportingSince ?: fix.at else null
+        val done = since != null && fix.at - since >= GameRules.JAIL_REPORT_HOLD &&
+            fix.at <= (p.jailDeadline ?: Long.MAX_VALUE)
+        val updated = p.copy(reportingSince = since, reportedAt = if (done) fix.at else null)
+        return Transition(
+            game.copy(players = game.players + (p.id to updated)),
+            notices = if (done) listOf("${p.user.displayName} reported to jail.") else emptyList(),
+        )
+    }
+
+    /** Prisoners past their deadline without a completed report are out, and forfeit the round's points. */
+    private fun disqualifyLate(game: Game, now: Millis): Transition {
+        val late = game.players.values.filter {
+            it.isJailed && !it.disqualified && it.reportedAt == null && it.jailDeadline != null && now > it.jailDeadline
+        }
+        if (late.isEmpty()) return Transition(game)
+        return Transition(
+            game.copy(players = game.players + late.associate { it.id to it.copy(disqualified = true, reportingSince = null) }),
+            awards = late.mapNotNull { p ->
+                val net = game.earned[p.id] ?: 0L
+                if (net > 0) game.award(p.id, -net, "Disqualified: never reported to jail", now) else null
+            },
+            notices = late.map { "${it.user.displayName} never reported to jail. Disqualified." },
+        )
     }
 
     private fun duePings(game: Game, now: Millis): Transition {
@@ -263,7 +324,7 @@ class GameEngine(
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
         val v = Verification.flagCapture(game, by, photo, now)
         if (v != Verdict.Valid) return Transition(game, v)
-        return end(game, Outcome.FlagCaptured(game.players.getValue(by).team, by), now)
+        return end(game, Outcome.FlagCaptured(game.players.getValue(by).team, by), now).settled()
     }
 
     /**
@@ -370,7 +431,23 @@ class GameEngine(
         return Transition(game.copy(bounties = game.bounties + (by to target)))
     }
 
-    fun tag(game: Game, by: PlayerId, target: PlayerId, photo: PhotoEvidence, now: Millis, ble: BleTokenRegistry): Transition {
+    /**
+     * Jails [target]. [reportWindowMs] is how long they get to reach the jail, computed by the
+     * caller from travel time ([com.hereliesaz.capturetheflag.rules.JailRules.reportWindow]).
+     */
+    fun tag(
+        game: Game,
+        by: PlayerId,
+        target: PlayerId,
+        photo: PhotoEvidence,
+        now: Millis,
+        ble: BleTokenRegistry,
+        reportWindowMs: Long = GameRules.HOUR,
+    ): Transition = tagUnsettled(game, by, target, photo, now, ble, reportWindowMs).settled()
+
+    private fun tagUnsettled(
+        game: Game, by: PlayerId, target: PlayerId, photo: PhotoEvidence, now: Millis, ble: BleTokenRegistry, reportWindowMs: Long,
+    ): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
         val v = Verification.tag(game, by, target, photo, now, ble)
         if (v != Verdict.Valid) return Transition(game, v)
@@ -395,7 +472,9 @@ class GameEngine(
             game.award(target, Points.JAILED.toLong(), "Jailed", now),
         )
         val g = game.copy(
-            players = game.players + (target to victim.copy(jailedAt = now)),
+            players = game.players + (target to victim.copy(
+                jailedAt = now, jailDeadline = now + reportWindowMs, reportingSince = null, reportedAt = null, breakoutSince = null,
+            )),
             incursions = game.incursions - target,
             vanishPending = game.vanishPending - target,
             scoredTags = game.scoredTags + key,
@@ -406,11 +485,11 @@ class GameEngine(
     private fun parole(game: Game, now: Millis): Transition {
         val due = game.players.values.filter { p ->
             val ms = perks(p).paroleMs
-            p.jailedAt != null && ms != null && now >= p.jailedAt + ms
+            p.jailedAt != null && ms != null && !p.disqualified && p.reportedAt != null && now >= p.jailedAt + ms
         }
         if (due.isEmpty()) return Transition(game)
         return Transition(
-            game.copy(players = game.players + due.associate { it.id to it.copy(jailedAt = null) }),
+            game.copy(players = game.players + due.associate { it.id to it.freed() }),
             notices = due.map { "${it.user.displayName} is out on parole." },
         )
     }
@@ -420,15 +499,52 @@ class GameEngine(
      * whatever mechanic is chosen will call once it verifies the rescue.
      */
     fun release(game: Game, player: PlayerId): Transition {
-        val p = game.players[player]?.takeIf { it.isJailed } ?: return game.reject("Not jailed")
-        return Transition(game.copy(players = game.players + (player to p.copy(jailedAt = null))))
+        val p = game.players[player]?.takeIf { it.isJailed && !it.disqualified } ?: return game.reject("Not jailed")
+        return Transition(game.copy(players = game.players + (player to p.freed())))
     }
+
+    /**
+     * Starts a jailbreak: a free player photographs the enemy jail, then must stay within range
+     * of it for [GameRules.JAILBREAK_HOLD] unbroken. Leaving, or being jailed, ends the attempt.
+     * On completion every teammate held (reported or en route, never the disqualified) walks free.
+     */
+    fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Transition {
+        if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
+        val v = Verification.jailbreak(game, by, photo, now)
+        if (v != Verdict.Valid) return Transition(game, v)
+        val rescuer = game.players.getValue(by)
+        if (rescuer.breakoutSince != null) return game.reject("Jailbreak already under way")
+        if (game.team(rescuer.team).none { it.isJailed && !it.disqualified }) return game.reject("No one to free")
+        return Transition(game.copy(players = game.players + (by to rescuer.copy(breakoutSince = now))))
+    }
+
+    /** A rescuer's fix: still at the jail keeps the attempt alive; the full hold springs everyone. */
+    private fun holdBreakout(game: Game, rescuer: Player, fix: LocationFix): Transition {
+        val since = rescuer.breakoutSince ?: return Transition(game)
+        val jail = game.jails[rescuer.team.opponent]
+        val there = jail != null && fix.accuracyM <= GameRules.MAX_FIX_ACCURACY_M &&
+            fix.point.distanceTo(jail.location) <= GameRules.JAIL_REPORT_RADIUS_M
+        if (!there) return Transition(game.copy(players = game.players + (rescuer.id to rescuer.copy(breakoutSince = null))))
+        if (fix.at - since < GameRules.JAILBREAK_HOLD) return Transition(game)
+        val done = game.copy(players = game.players + (rescuer.id to rescuer.copy(breakoutSince = null)))
+        val freed = done.team(rescuer.team).filter { it.isJailed && !it.disqualified }
+        if (freed.isEmpty()) return Transition(done)
+        return Transition(
+            done.copy(players = done.players + freed.associate { it.id to it.freed() }),
+            awards = listOf(done.award(rescuer.id, Points.JAILBREAK_PER_FREED.toLong() * freed.size, "Freed ${freed.size}", fix.at)),
+            notices = listOf("${rescuer.user.displayName} broke ${freed.size} out of jail."),
+        )
+    }
+
+    private fun Player.freed() = copy(jailedAt = null, jailDeadline = null, reportingSince = null, reportedAt = null)
 
     /** Flag moved (or any other disqualifying breach) as determined by moderation or detection. */
     fun forfeit(game: Game, loser: Team, reason: String, now: Millis): Transition =
-        if (game.phase is GamePhase.Ended) game.reject("Game already over") else end(game, Outcome.Forfeit(loser, reason), now)
+        if (game.phase is GamePhase.Ended) game.reject("Game already over") else end(game, Outcome.Forfeit(loser, reason), now).settled()
 
     private fun end(game: Game, outcome: Outcome, now: Millis): Transition {
+        // The freeze lifts at the final whistle, except for the disqualified.
+        val game = game.copy(players = game.players.mapValues { (_, p) -> if (p.isJailed && !p.disqualified) p.freed() else p })
         val awards = when (outcome) {
             is Outcome.FlagCaptured -> buildList {
                 add(game.award(outcome.by, Points.FLAG_CAPTURE.toLong(), "Captured the flag", now))
@@ -462,6 +578,18 @@ class GameEngine(
             .maxByOrNull { perks(it).mentorShare } ?: return@mapNotNull null
         val bonus = (a.points * perks(best).mentorShare).toLong()
         if (bonus > 0) a.copy(points = bonus, reason = "Mentored by ${best.user.displayName}") else null
+    }
+
+    /**
+     * Frozen players earn nothing: positive awards to anyone jailed (or disqualified) in the
+     * resulting state are dropped. What survives is added to the round's running totals.
+     */
+    private fun Transition.settled(): Transition {
+        val paid = awards.filter { a -> a.points <= 0 || game.players[a.user]?.isJailed != true }
+        if (paid.isEmpty()) return copy(awards = paid)
+        val earned = game.earned.toMutableMap()
+        paid.forEach { earned[it.user] = (earned[it.user] ?: 0L) + it.points }
+        return copy(game = game.copy(earned = earned), awards = paid)
     }
 
     private fun perks(p: Player) = Progression.perksFor(p.level)

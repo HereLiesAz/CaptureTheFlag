@@ -52,6 +52,37 @@ object Verification {
         return Verdict.Valid
     }
 
+    /** Leader registering the team jail. Flag first, then a jail well away from it. */
+    fun jailRegistration(game: Game, by: PlayerId, venue: GeoPoint, photo: PhotoEvidence, now: Millis): Verdict {
+        val p = game.players[by] ?: return Verdict.Rejected("Not in this game")
+        if (!p.isLeader) return Verdict.Rejected("Only the captain or co-captains place the jail")
+        if (game.jails.containsKey(p.team)) return Verdict.Rejected("Jail already placed")
+        val flag = game.flags[p.team] ?: return Verdict.Rejected("Place the flag first")
+        val (exif, err) = sound(photo, now)
+        if (exif == null) return Verdict.Rejected(err!!)
+        if (exif.distanceTo(venue) > GameRules.FLAG_REGISTRATION_TOLERANCE_M) {
+            return Verdict.Rejected("Photo was not taken at the stated venue")
+        }
+        if (game.territory.ownerOf(venue) != p.team) return Verdict.Rejected("Jail must be inside your own territory")
+        if (venue.distanceTo(flag.location) < GameRules.JAIL_MIN_FROM_FLAG_M) {
+            return Verdict.Rejected("Jail must be at least ${GameRules.JAIL_MIN_FROM_FLAG_M.toInt()} m from your flag")
+        }
+        return Verdict.Valid
+    }
+
+    /** Jailbreak: a free player photographs the enemy jail. */
+    fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Verdict {
+        val p = game.players[by] ?: return Verdict.Rejected("Not in this game")
+        if (p.isJailed) return Verdict.Rejected("Jailed players cannot break anyone out")
+        val jail = game.jails[p.team.opponent] ?: return Verdict.Rejected("Enemy jail not placed")
+        val (exif, err) = sound(photo, now)
+        if (exif == null) return Verdict.Rejected(err!!)
+        if (exif.distanceTo(jail.location) > GameRules.JAIL_TOLERANCE_M) {
+            return Verdict.Rejected("Photo was not taken at the enemy jail")
+        }
+        return Verdict.Valid
+    }
+
     /** Win condition: an opponent photographs the flag where it was registered. */
     fun flagCapture(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Verdict {
         val p = game.players[by] ?: return Verdict.Rejected("Not in this game")
