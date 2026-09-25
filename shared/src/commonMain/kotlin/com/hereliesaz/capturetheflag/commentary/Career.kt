@@ -18,9 +18,13 @@ data class Career(
     val disqualifications: Int = 0,
     val wins: Int = 0,
     val rounds: Int = 0,
+    /** Consecutive results ending with the latest finished round: positive = wins, negative = losses. Ties break it. */
+    val streak: Int = 0,
 ) {
     val level: Int get() = Progression.levelFor(points)
     val rookie: Boolean get() = rounds == 0
+    /** Levels gained per finished round. */
+    val pace: Double get() = if (rounds == 0) 0.0 else (level - 1).toDouble() / rounds
 
     companion object {
         val NONE = Career()
@@ -42,7 +46,22 @@ data class Career(
                 disqualifications = past.count { it.reason.startsWith("Disqualified") },
                 wins = past.count { it.reason == "Team won" || it.reason == "Opponent forfeited" },
                 rounds = past.map { it.game }.distinct().size,
+                streak = streak(past),
             )
+        }
+
+        /** Rounds in the order played (first award), each a win, tie or loss. */
+        private fun streak(past: List<Award>): Int {
+            val results = past.groupBy { it.game }.values.sortedBy { round -> round.minOf { it.at } }.map { round ->
+                when {
+                    round.any { it.reason == "Team won" || it.reason == "Opponent forfeited" } -> 1
+                    round.any { it.reason == "Tie" } -> 0
+                    else -> -1
+                }
+            }
+            val last = results.lastOrNull() ?: return 0
+            if (last == 0) return 0
+            return results.takeLastWhile { it == last }.size * last
         }
     }
 }

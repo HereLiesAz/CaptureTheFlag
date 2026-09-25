@@ -33,7 +33,7 @@ It reads the play and guesses intent (`speculation`): an intruder steadily closi
 
 Rivalries come from shared history (`commentary/Rivalry.kt`): every tag pairs a tagger with a prisoner on the ledger, so the booth knows who has jailed whom, how often, and who's ahead. It calls the score on a tag ("leads that rivalry 3 to 1 now", "that squares it"), flags a nemesis when an old rival crosses into their territory, and turns a hunt between two rivals into a grudge match.
 
-It brings up careers (`commentary/Career.kt`, read off the ledger): rookies, past captures and where, career tags, longest survival, biggest breakout, disqualifications, wins, high levels. Sometimes, not every line.
+It brings up careers (`commentary/Career.kt`, read off the ledger): rookies, past captures and where, career tags, longest survival, biggest breakout, disqualifications, wins, high levels, winning and losing streaks, and how fast someone has climbed (or hasn't). Sometimes, not every line. Level-ups are called live as points land, with the big call when a milestone brings a new advantage.
 
 What it never says: coordinates, distances, the flag's venue or address.
 

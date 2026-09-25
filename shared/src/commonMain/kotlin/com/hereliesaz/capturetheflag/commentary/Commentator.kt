@@ -71,6 +71,7 @@ class Commentator(
         lines += notices.filter { "Last Stand" in it }.map {
             pick("$it The photo is thrown out. The crowd is not sure whether to cheer.", "$it Denied. You don't see that twice in a career. Maybe once.")
         }
+        lines += levelUps(after, awards)
         if (previousNow != null) lines += clock(after, previousNow, now)
         return lines.stamp(now)
     }
@@ -326,6 +327,23 @@ class Commentator(
         return "And somewhere on the other side, ${d.user.displayName}, who has jailed ${intruder.user.displayName} ${times(h.aJailedB)}, just got a lot more interested."
     }
 
+    /** Anyone this transition pushed over a level line. Milestones, where advantages arrive, get the big call. */
+    private fun levelUps(a: Game, awards: List<Award>): List<String> =
+        awards.filter { it.points > 0 }.groupBy { it.user }.mapNotNull { (id, gained) ->
+            val p = a.players[id] ?: return@mapNotNull null
+            val total = career(id).points
+            val from = Progression.levelFor(total - gained.sumOf { it.points })
+            val to = Progression.levelFor(total)
+            if (to <= from) return@mapNotNull null
+            val name = p.user.displayName
+            val milestone = Progression.nextMilestone(from).takeIf { it <= to }
+            when {
+                milestone != null && Progression.powerAt(milestone) > 1 -> "And that's level $to for $name. A double milestone. Whatever they had before, they've got more of it now."
+                milestone != null -> "$name hits level $to, and level $milestone brings something new with it. Watch them."
+                else -> pick("$name ticks up to level $to.", "Level $to for $name. The climb continues.")
+            }
+        }
+
     private fun times(n: Int) = when (n) { 0 -> "never"; 1 -> "once"; 2 -> "twice"; else -> "$n times" }
 
     private fun ordinal(n: Int) = when (n) { 1 -> "the first"; 2 -> "the second"; 3 -> "the third"; else -> "the ${n}th" }
@@ -378,6 +396,12 @@ class Commentator(
             if (c.biggestBreakout >= 2) add("who once sprang ${c.biggestBreakout} teammates in one go")
             if (c.wins >= 3) add("${c.wins} wins and the posture to prove it")
             if (c.level >= 30) add("level ${c.level}, which around here means something")
+            if (c.streak >= 3) add("winners of their last ${c.streak} rounds, and it shows in the walk")
+            if (c.streak == 2) add("coming off back-to-back wins")
+            if (c.streak <= -3) add("who has lost ${-c.streak} straight and is due, or doomed")
+            if (c.streak == -2) add("two losses running and looking for somebody to blame")
+            if (c.rounds in 1..5 && c.pace >= 3.0) add("already level ${c.level} after ${c.rounds} ${if (c.rounds == 1) "round" else "rounds"}, a climb like that doesn't happen by accident")
+            if (c.rounds >= 8 && c.level <= 5) add("${c.rounds} rounds in and still level ${c.level}. Patience is also a sport")
         }
         return options.randomOrNull(random)
     }

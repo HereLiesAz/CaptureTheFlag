@@ -190,4 +190,41 @@ class CommentatorTest {
         assertTrue(lines.any { hunter.user.displayName in it && prey.user.displayName in it && "2 to 2" in it || "Again" in it }, lines.joinToString("\n"))
         lines.givesNothingAway(g)
     }
+
+    @Test fun streaksAndPaceReadOffTheLedger() {
+        fun round(g: String, at: Long, result: String?) = listOfNotNull(
+            Award("x", "nola", g, 12, "Jailed Y", at),
+            result?.let { Award("x", "nola", g, 25, it, at + 1) },
+        )
+        val wins = round("g1", 1, null) + round("g2", 10, "Team won") + round("g3", 20, "Team won") + round("g4", 30, "Opponent forfeited")
+        assertEquals(3, Career.from(wins, "x").streak)
+        val losses = round("g1", 1, "Team won") + round("g2", 10, null) + round("g3", 20, null)
+        assertEquals(-2, Career.from(losses, "x").streak)
+        assertEquals(0, Career.from(losses + round("g4", 30, "Tie"), "x").streak)
+        assertEquals(3, Career.from(wins, "x", excluding = setOf("g4")).rounds)
+    }
+
+    @Test fun levelUpsAreCalledAndMilestonesGetTheBigCall() {
+        var g = active()
+        val prisoner = g.players.values.first()
+        val jailer = g.team(prisoner.team.opponent).first()
+        val t = DAY + MINUTE
+        g = engine.reportLocation(g, prisoner.id, LocationFix(home(jailer.team), t, 5.0)).game
+        val ble = BleTokenRegistry { k, _ -> if (k == "k") prisoner.id else null }
+        val tagged = engine.tag(g, jailer.id, prisoner.id, photo(home(jailer.team), t, listOf(BleSighting("k", t, -50))), t, ble)
+        val gained = tagged.awards.single { it.user == jailer.id }.points
+        // Just over the line into level 15, a milestone.
+        val total = com.hereliesaz.capturetheflag.rules.Progression.pointsFor(15) + gained - 1
+        val booth = Commentator(Random(6), career = { if (it == jailer.id) Career(points = total) else Career.NONE })
+        val lines = booth.narrate(g, tagged.game, tagged.awards, tagged.notices, t).map { it.text }
+        assertTrue(lines.any { "level 15" in it && jailer.user.displayName in it }, lines.joinToString("\n"))
+    }
+
+    @Test fun rookiesAndStreaksColourTheBroadcast() {
+        val g = active()
+        val hot = Commentator(Random(8), career = { Career(points = 40_000, rounds = 6, streak = 4) })
+        val cold = Commentator(Random(8), career = { Career(points = 500, rounds = 9, streak = -3) })
+        assertTrue((1..30).mapNotNull { hot.lull(g, DAY + it * HOUR)?.text }.any { "last 4 rounds" in it })
+        assertTrue((1..30).mapNotNull { cold.lull(g, DAY + it * HOUR)?.text }.any { "lost 3 straight" in it || "Patience" in it })
+    }
 }
