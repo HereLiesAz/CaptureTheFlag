@@ -46,13 +46,14 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
     }
 
     override val location: StateFlow<com.hereliesaz.capturetheflag.model.LocationFix?> = Tracking.location
+    override val locationOn: StateFlow<Boolean> = Tracking.watchEnabled(activity)
 
     /**
      * Opens the in-app camera. A fresh fix is taken first and handed to the camera, which
      * stamps it into the photo's EXIF; that same fix is published as the live device fix.
      */
     @SuppressLint("MissingPermission")
-    private suspend fun shoot(prefix: String, front: Boolean): Pair<Uri, CameraActivity.Pose?>? {
+    private suspend fun shoot(prefix: String, front: Boolean): Pair<Uri, Orientation.Pose?>? {
         val dir = File(activity.filesDir, "photos").apply { mkdirs() }
         val file = File(dir, "$prefix-${System.currentTimeMillis()}.jpg")
         val live = runCatching { fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
@@ -69,6 +70,14 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
     @SuppressLint("MissingPermission")
     override suspend fun takePhoto(): PhotoEvidence? {
         val (uri, pose) = shoot("evidence", front = false) ?: return null
+        return evidence(uri, pose)
+    }
+
+    /** A saved JPEG as evidence: what its EXIF claims, the live fix, the BLE tokens heard, the pose. */
+    internal suspend fun evidence(file: File, pose: Orientation.Pose?): PhotoEvidence =
+        evidence(FileProvider.getUriForFile(activity, "${activity.packageName}.photos", file), pose)
+
+    private suspend fun evidence(uri: Uri, pose: Orientation.Pose?): PhotoEvidence {
         val (gps, taken, facing) = withContext(Dispatchers.IO) {
             activity.contentResolver.openInputStream(uri)!!.use { s ->
                 val exif = ExifInterface(s)
@@ -89,6 +98,17 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
             pose = pose?.let { DevicePose(it.azimuth, it.pitch, it.roll, it.at) },
         )
     }
+
+    @Composable
+    override fun LiveCamera(
+        challenge: String?,
+        status: String,
+        lap: Boolean,
+        finishLabel: String?,
+        onFrame: suspend (com.hereliesaz.capturetheflag.model.LocationFix, String) -> Unit,
+        onFinish: (PhotoEvidence?) -> Unit,
+        modifier: Modifier,
+    ) = LiveCameraView(this, challenge, status, lap, finishLabel, onFrame, onFinish, modifier)
 
     override fun startProximity(token: String) = proximity.start(token)
     override fun stopProximity() = proximity.stop()

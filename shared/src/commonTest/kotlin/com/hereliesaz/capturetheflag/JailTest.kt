@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag
 
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.data.HeuristicTravel
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.geo.DividingLine
@@ -128,7 +129,7 @@ class JailTest {
         val rescuer = tr.game.team(prisoner.team).first { it.id != prisoner.id }
         val jail = tr.game.jails.getValue(prisoner.team.opponent).location
         val t = DAY + 30 * MINUTE
-        assertIs<Verdict.Rejected>(engine.jailbreak(tr.game, rescuer.id, photo(jail, t), t).verdict)
+        assertIs<Verdict.Rejected>(engine.goLive(tr.game, rescuer.id, "s1", StreamPurpose.JAILBREAK, LocationFix(jail.north(60.0), t, 5.0), t).verdict)
     }
 
     @Test fun prisonersAreFrozen() {
@@ -136,64 +137,133 @@ class JailTest {
         val enemyFlag = g.flags.getValue(prisoner.team.opponent).location
         val enemyJail = g.jails.getValue(prisoner.team.opponent).location
         val t = DAY + 5 * MINUTE
-        assertIs<Verdict.Rejected>(engine.captureFlag(g, prisoner.id, photo(enemyFlag, t), t).verdict)
-        assertIs<Verdict.Rejected>(engine.jailbreak(g, prisoner.id, photo(enemyJail, t), t).verdict)
+        assertIs<Verdict.Rejected>(engine.goLive(g, prisoner.id, "s1", StreamPurpose.CAPTURE, LocationFix(enemyFlag.north(60.0), t, 5.0), t).verdict)
+        assertIs<Verdict.Rejected>(engine.goLive(g, prisoner.id, "s2", StreamPurpose.JAILBREAK, LocationFix(enemyJail.north(60.0), t, 5.0), t).verdict)
         val someone = g.team(prisoner.team.opponent).first()
         val ble = BleTokenRegistry { _, _ -> someone.id }
         assertIs<Verdict.Rejected>(engine.tag(g, prisoner.id, someone.id, photo(home(prisoner.team), t), t, ble).verdict)
     }
 
-    @Test fun aPhotoAloneFreesNoOne() {
+    @Test fun goingLiveFreesNoOne() {
         val (g, prisoner, _) = jailOne()
         val rescuer = g.team(prisoner.team).first { it.id != prisoner.id }
         val jail = g.jails.getValue(prisoner.team.opponent).location
         val t = DAY + 30 * MINUTE
-        val started = engine.jailbreak(g, rescuer.id, photo(jail, t), t)
+        val started = engine.goLive(g, rescuer.id, "s1", StreamPurpose.JAILBREAK, LocationFix(jail.north(60.0), t, 5.0), t)
         assertEquals(Verdict.Valid, started.verdict)
         assertTrue(started.game.p(prisoner.id).isJailed)
-        assertEquals(t, started.game.p(rescuer.id).breakoutSince)
         assertTrue(started.awards.isEmpty())
+        assertTrue(started.notices.single().contains(rescuer.user.displayName), "the city is told")
+        assertNotNull(started.game.streams.getValue("s1").challenge, "the challenge is shown at the start")
+        // Too close: the approach has to be on camera.
+        assertIs<Verdict.Rejected>(engine.goLive(g, rescuer.id, "s2", StreamPurpose.JAILBREAK, LocationFix(jail.north(10.0), t, 5.0), t).verdict)
     }
 
-    @Test fun holdingTheJailFifteenMinutesFreesEveryone() {
-        val (g0, prisoner, _) = jailOne()
+    @Test fun streamingAFifteenMinuteHoldFreesEveryoneOnceTheWindowCloses() {
+        val (g0, prisoner, _) = jailOne(window = 10 * DAY)
         val rescuer = g0.team(prisoner.team).first { it.id != prisoner.id }
         val jail = g0.jails.getValue(prisoner.team.opponent).location
         val t = DAY + 30 * MINUTE
-        var g = engine.jailbreak(g0, rescuer.id, photo(jail, t), t).game
-        g = engine.reportLocation(g, rescuer.id, LocationFix(jail, t + 14 * MINUTE, 5.0)).game
-        assertTrue(g.p(prisoner.id).isJailed)
-        val done = engine.reportLocation(g, rescuer.id, LocationFix(jail, t + 15 * MINUTE, 5.0))
+        val ended = engine.stream(g0, rescuer.id, StreamPurpose.JAILBREAK, jail, t, ::photo, settle = false)
+        assertEquals(Verdict.Valid, ended.verdict)
+        val s = ended.game.streams.getValue("s1")
+        assertNotNull(s.challenge)
+        assertTrue(s.pending)
+        assertTrue(ended.game.p(prisoner.id).isJailed, "not until the defenders have had their chance")
+        val at = s.endedAt!! + GameRules.STREAM_CONTEST_WINDOW
+        val done = engine.tick(ended.game, at)
         assertTrue(!done.game.p(prisoner.id).isJailed)
         assertNull(done.game.p(rescuer.id).breakoutSince)
         assertEquals(20L, done.awards.single { it.reason.startsWith("Freed") }.points)
-        assertEquals(1, done.notices.size)
+        assertTrue(done.notices.any { "broke 1 out" in it })
     }
 
-    @Test fun leavingTheJailAbandonsTheBreakout() {
-        val (g0, prisoner, _) = jailOne()
+    @Test fun finishingBeforeTheChallengeIsAnsweredIsRefused() {
+        val (g0, prisoner, _) = jailOne(window = 10 * DAY)
         val rescuer = g0.team(prisoner.team).first { it.id != prisoner.id }
         val jail = g0.jails.getValue(prisoner.team.opponent).location
         val t = DAY + 30 * MINUTE
-        var g = engine.jailbreak(g0, rescuer.id, photo(jail, t), t).game
-        g = engine.reportLocation(g, rescuer.id, LocationFix(GeoPoint(jail.lat + 0.01, jail.lng), t + 10 * MINUTE, 5.0)).game
-        assertNull(g.p(rescuer.id).breakoutSince)
-        g = engine.reportLocation(g, rescuer.id, LocationFix(jail, t + 16 * MINUTE, 5.0)).game
-        assertTrue(g.p(prisoner.id).isJailed)
+        val live = engine.goLive(g0, rescuer.id, "s1", StreamPurpose.JAILBREAK, LocationFix(jail.north(60.0), t, 5.0), t)
+        val early = engine.endStream(live.game, rescuer.id, "s1", photo(jail, t + 1), t + 1)
+        assertIs<Verdict.Rejected>(early.verdict)
+    }
+
+    @Test fun leavingTheJailVoidsTheStream() {
+        val (g0, prisoner, _) = jailOne(window = 10 * DAY)
+        val rescuer = g0.team(prisoner.team).first { it.id != prisoner.id }
+        val jail = g0.jails.getValue(prisoner.team.opponent).location
+        val t = DAY + 30 * MINUTE
+        val arrived = engine.stream(g0, rescuer.id, StreamPurpose.JAILBREAK, jail, t, ::photo) { it.p(rescuer.id).breakoutSince != null }
+        val at = arrived.game.streams.getValue("s1").lastFrame.at + FRAME_MS
+        val left = engine.streamFrame(arrived.game, rescuer.id, "s1", LocationFix(jail.north(500.0), at, 5.0), "c", at)
+        assertEquals("Left the jail", left.game.streams.getValue("s1").void)
+        assertNull(left.game.p(rescuer.id).breakoutSince)
+        assertTrue(left.highlights.any { it.kind == com.hereliesaz.capturetheflag.model.HighlightKind.BREAKOUT_ABANDONED })
+        assertTrue(engine.tick(left.game, at + GameRules.JAILBREAK_HOLD).game.p(prisoner.id).isJailed)
+    }
+
+    @Test fun aStreamThatGoesQuietIsDropped() {
+        val (g0, prisoner, _) = jailOne(window = 10 * DAY)
+        val rescuer = g0.team(prisoner.team).first { it.id != prisoner.id }
+        val jail = g0.jails.getValue(prisoner.team.opponent).location
+        val t = DAY + 30 * MINUTE
+        val live = engine.goLive(g0, rescuer.id, "s1", StreamPurpose.JAILBREAK, LocationFix(jail.north(60.0), t, 5.0), t)
+        val quiet = engine.tick(live.game, t + GameRules.STREAM_MAX_GAP + 1)
+        assertEquals("Stream dropped", quiet.game.streams.getValue("s1").void)
     }
 
     @Test fun jailingTheRescuerEndsTheBreakout() {
-        val (g0, prisoner, jailer) = jailOne()
+        val (g0, prisoner, jailer) = jailOne(window = 10 * DAY)
         val rescuer = g0.team(prisoner.team).first { it.id != prisoner.id }
         val jail = g0.jails.getValue(prisoner.team.opponent).location
         val t = DAY + 30 * MINUTE
-        var g = engine.jailbreak(g0, rescuer.id, photo(jail, t), t).game
-        g = engine.reportLocation(g, rescuer.id, LocationFix(jail, t + MINUTE, 5.0)).game
+        val arrived = engine.stream(g0, rescuer.id, StreamPurpose.JAILBREAK, jail, t, ::photo) { it.p(rescuer.id).breakoutSince != null }
+        val at = arrived.game.streams.getValue("s1").lastFrame.at + 1
         val ble = BleTokenRegistry { tok, _ -> if (tok == "r") rescuer.id else null }
-        val tagged = engine.tag(g, jailer.id, rescuer.id, photo(jail, t + MINUTE, listOf(BleSighting("r", t + MINUTE, -40))), t + MINUTE, ble)
+        val tagged = engine.tag(arrived.game, jailer.id, rescuer.id, photo(jail, at, listOf(BleSighting("r", at, -40))), at, ble)
         assertEquals(Verdict.Valid, tagged.verdict)
-        assertNull(tagged.game.p(rescuer.id).breakoutSince)
-        assertTrue(tagged.game.p(prisoner.id).isJailed)
+        assertEquals("Caught", tagged.game.streams.getValue("s1").void, "the moment the tag lands")
+        val after = engine.tick(tagged.game, at + 1)
+        assertNull(after.game.p(rescuer.id).breakoutSince)
+        assertTrue(after.game.p(prisoner.id).isJailed)
+    }
+
+    @Test fun aDisputeWaitsForTheRefereesAndTheirRulingDecides() {
+        val (g0, prisoner, jailer) = jailOne(window = 10 * DAY)
+        val rescuer = g0.team(prisoner.team).first { it.id != prisoner.id }
+        val jail = g0.jails.getValue(prisoner.team.opponent).location
+        val t = DAY + 30 * MINUTE
+        val ended = engine.stream(g0, rescuer.id, StreamPurpose.JAILBREAK, jail, t, ::photo, settle = false)
+        val end = ended.game.streams.getValue("s1").endedAt!!
+        assertIs<Verdict.Rejected>(engine.dispute(ended.game, rescuer.id, "s1", "mine", end + 1).verdict, "only defenders dispute")
+        val disputed = engine.dispute(ended.game, jailer.id, "s1", "Challenge not said on camera", end + MINUTE)
+        assertEquals(Verdict.Valid, disputed.verdict)
+        // The window closing doesn't settle a disputed stream.
+        assertTrue(engine.tick(disputed.game, end + GameRules.STREAM_CONTEST_WINDOW).game.p(prisoner.id).isJailed)
+        val ruledAt = end + 2 * MINUTE
+        val afterAppeals = ruledAt + GameRules.STREAM_APPEAL_WINDOW
+        // A ruling waits out the appeal window before it counts.
+        val thrownOut = engine.rule(disputed.game, "s1", review = 0, upheld = false, now = ruledAt)
+        assertTrue(thrownOut.game.streams.getValue("s1").pending)
+        assertEquals("Failed review", engine.tick(thrownOut.game, afterAppeals).game.streams.getValue("s1").void)
+        val upheld = engine.rule(disputed.game, "s1", review = 0, upheld = true, now = ruledAt)
+        assertTrue(upheld.game.p(prisoner.id).isJailed)
+        assertTrue(!engine.tick(upheld.game, afterAppeals).game.p(prisoner.id).isJailed)
+        // A leader appeals: a second review, and its ruling is final at once. One appeal per team per round.
+        val defenderLeader = disputed.game.team(jailer.team).first { it.isLeader }
+        disputed.game.team(jailer.team).firstOrNull { !it.isLeader }?.let {
+            assertIs<Verdict.Rejected>(engine.appeal(upheld.game, it.id, "s1", ruledAt + MINUTE).verdict, "only leaders appeal")
+        }
+        val appealed = engine.appeal(upheld.game, defenderLeader.id, "s1", ruledAt + MINUTE)
+        assertEquals(Verdict.Valid, appealed.verdict)
+        assertTrue(jailer.team in appealed.game.appealsUsed)
+        assertIs<Verdict.Rejected>(engine.rule(appealed.game, "s1", review = 0, upheld = false, now = ruledAt + 2 * MINUTE).verdict, "a vote on the old review doesn't count")
+        val final = engine.rule(appealed.game, "s1", review = 1, upheld = false, now = ruledAt + 2 * MINUTE)
+        assertEquals("Failed review", final.game.streams.getValue("s1").void)
+        // A review that never reports back doesn't hold the game hostage.
+        val late = end + MINUTE + GameRules.STREAM_RULING_WINDOW
+        val timedOut = engine.tick(disputed.game, late)
+        assertTrue(!timedOut.game.p(prisoner.id).isJailed)
     }
 
     @Test fun paroleOnlyAfterReporting() {
@@ -213,7 +283,7 @@ class JailTest {
         val capturer = g.team(prisoner.team).first { !it.isJailed }
         val flag = g.flags.getValue(prisoner.team.opponent).location
         val t = DAY + 40 * MINUTE
-        val won = engine.captureFlag(g, capturer.id, photo(flag, t), t)
+        val won = engine.stream(g, capturer.id, StreamPurpose.CAPTURE, flag, t, ::photo)
         val paid = won.awards.map { it.user }.toSet()
         assertTrue(mate.id in paid)
         assertTrue(prisoner.id !in paid)

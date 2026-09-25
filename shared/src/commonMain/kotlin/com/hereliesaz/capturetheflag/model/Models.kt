@@ -73,10 +73,12 @@ data class Player(
     val reportedAt: Millis? = null,
     /** Failed to report: out for the round, no points from it. Stays jailed. */
     val disqualified: Boolean = false,
-    /** A jailbreak in progress: unbroken presence at the enemy jail since this time. */
+    /** A jailbreak in progress: its live stream has been at the enemy jail, unbroken, since this time. */
     val breakoutSince: Millis? = null,
     /** Level snapshotted when teams are dealt; fixed for the round. */
     val level: Int = 1,
+    /** Had never finished a round when teams were dealt. Rookies don't lead unless everyone is one. */
+    val rookie: Boolean = false,
 ) {
     val id: PlayerId get() = user.id
     val isLeader: Boolean get() = role != Role.PLAYER
@@ -172,6 +174,12 @@ enum class PingKind {
     TRIPWIRE,
     /** Interrogate: forced on-demand ping. */
     INTERROGATION,
+    /**
+     * To the player alone: they're within [com.hereliesaz.capturetheflag.rules.GameRules.FLAG_ZONE_M]
+     * of the enemy flag and should go live, or a capture won't count. [Ping.location] is their own
+     * position, never the flag's.
+     */
+    GO_LIVE,
 }
 
 /**
@@ -230,9 +238,73 @@ data class Game(
     val decoyWalks: List<DecoyWalk> = emptyList(),
     /** Recipient → intruders they have been pinged about this round. Gates Interrogate. */
     val pingedAbout: Map<PlayerId, Set<PlayerId>> = emptyMap(),
+    /** Capture and jailbreak streams this round, by stream id: live, awaiting disputes, or done. */
+    val streams: Map<String, LiveStream> = emptyMap(),
+    /** Player → when they came within [com.hereliesaz.capturetheflag.rules.GameRules.FLAG_ZONE_M] of the enemy flag, this approach. */
+    val flagZone: Map<PlayerId, Millis> = emptyMap(),
+    /** Players who switched location off on enemy ground: their next fix at home jails them. */
+    val dark: Set<PlayerId> = emptySet(),
+    /** Teams that have used their one appeal this round. */
+    val appealsUsed: Set<Team> = emptySet(),
 ) {
     fun team(t: Team): List<Player> = players.values.filter { it.team == t }
 }
+
+/** What a live stream is trying to prove. */
+enum class StreamPurpose { CAPTURE, JAILBREAK }
+
+/**
+ * A capture or jailbreak, streamed live to everybody. The phone sends a frame every few
+ * seconds: its fix and the hash of the video written since the last frame, so the video can't
+ * be swapped afterward. The [challenge] is shown from the start and said with the winning
+ * frame ([qualifiedAt]); the referees' footage ends 30 s later ([endedAt]), and the stream may
+ * go on as a victory lap. Defenders then have until [contestUntil] to dispute; undisputed, it counts.
+ */
+data class LiveStream(
+    val id: String,
+    val by: PlayerId,
+    val purpose: StreamPurpose,
+    val target: GeoPoint,
+    val startedAt: Millis,
+    val lastFrame: LocationFix,
+    val chunks: List<String> = emptyList(),
+    /** Two words said at the start of the stream, drawn from the batch it went live in: nobody knew them before. */
+    val challenge: String? = null,
+    val challengeAt: Millis? = null,
+    /** The winning frame: said with the challenge. The referees' footage ends 30 s later, at [endedAt]. */
+    val qualifiedAt: Millis? = null,
+    /** Flag run: when the player came within 200 m of the flag, as of the winning frame. */
+    val zoneAt: Millis? = null,
+    /** Jailbreak: first frame inside the jail radius. */
+    val arrivedAt: Millis? = null,
+    val endedAt: Millis? = null,
+    /** The still it finished on, kept for review. */
+    val finish: PhotoEvidence? = null,
+    val contestUntil: Millis? = null,
+    val dispute: Dispute? = null,
+    /** Which review this is: 0 the first, 1 after an appeal. Referees vote per review. */
+    val review: Int = 0,
+    /** When the current review began: the dispute, or the appeal. */
+    val reviewSince: Millis? = null,
+    /** The referees' ruling on the current review, and when; it takes effect once the appeal window closes. */
+    val ruling: Boolean? = null,
+    val ruledAt: Millis? = null,
+    /** The team that appealed, if one did. */
+    val appealedBy: Team? = null,
+    /** Null while undecided; then true (it counted) or false (it didn't). */
+    val upheld: Boolean? = null,
+    /** Why it failed, if it did. */
+    val void: String? = null,
+) {
+    val open: Boolean get() = endedAt == null && void == null
+    val pending: Boolean get() = endedAt != null && void == null && upheld == null
+}
+
+/**
+ * A defender's objection to a stream. Settled by the referees' automated checks, never by a
+ * person. Each team's leaders see every referee's report first and may appeal once per round.
+ */
+data class Dispute(val by: PlayerId, val at: Millis, val reason: String)
 
 /** Points granted to one user by one verified event. Summed into global and per-city standings. */
 data class Award(
@@ -271,6 +343,11 @@ enum class HighlightKind {
      * Only players who made a list in a round may have that round's antics and rivalries aired later.
      */
     MADE_LIST,
+    /**
+     * Led a team: captain or co-captain ([Highlight.note] is the role). Like [MADE_LIST], it opens
+     * that round's antics and rivalries to the booth: leaders are notable by office.
+     */
+    LED,
 }
 
 /**

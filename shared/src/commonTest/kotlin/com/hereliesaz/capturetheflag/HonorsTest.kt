@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag
 
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.commentary.Career
 import com.hereliesaz.capturetheflag.commentary.Commentator
 import com.hereliesaz.capturetheflag.engine.GameEngine
@@ -81,7 +82,7 @@ class HonorsTest {
         val jailer = g.team(prisoner.team.opponent).first()
         g = tag(g, jailer, prisoner, DAY + 1)
         val flag = g.flags.getValue(jailer.team.opponent).location
-        val won = engine.captureFlag(g, jailer.id, photo(flag, DAY + 2), DAY + 2)
+        val won = engine.stream(g, jailer.id, StreamPurpose.CAPTURE, flag, DAY + 2, { at, t -> photo(at, t) })
         val reasons = won.awards.filter { it.user == jailer.id }.map { it.reason }
         assertTrue("MVP: ${jailer.team.name}" in reasons, reasons.toString())
         assertTrue("Most: The Collector" in reasons)
@@ -114,7 +115,7 @@ class HonorsTest {
         val prisoner = g.players.values.first()
         val jailer = g.team(prisoner.team.opponent).first()
         g = tag(g, jailer, prisoner, DAY + 1)
-        val won = engine.captureFlag(g, jailer.id, photo(g.flags.getValue(jailer.team.opponent).location, DAY + 2), DAY + 2)
+        val won = engine.stream(g, jailer.id, StreamPurpose.CAPTURE, g.flags.getValue(jailer.team.opponent).location, DAY + 2, { at, t -> photo(at, t) })
         val listed = won.highlights.filter { it.kind == com.hereliesaz.capturetheflag.model.HighlightKind.MADE_LIST }
         assertTrue(listed.any { it.user == jailer.id && it.note == "The Collector" && it.value == 1 })
         assertTrue(listed.any { it.user == prisoner.id && it.note == "Frequent Flyer" })

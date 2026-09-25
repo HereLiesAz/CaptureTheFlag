@@ -20,7 +20,7 @@ No company runs this game. Phones play it; volunteer **nodes** keep it honest. T
 |---|---|---|
 | **Player** | A phone | Signs actions. Encrypts its position and evidence to the game's referees. Decrypts what's addressed to it. |
 | **Node** | Anyone with a machine that stays on | Relays and stores events, stores media, and, if eligible, referees games. Runs city onboarding surveys and the photo matcher. |
-| **Referee** | A node drawn for a specific game | Holds that game's secrets, runs the engine on them, and signs what happened. |
+| **Referee** | A node drawn for a specific game: software, never a person | Holds that game's secrets, runs the engine on them, and signs what happened. Reviews disputed streams with automated checks. |
 | **Onlooker** | A registered user not in the game | Reads the public feed: radio, city chat, results. Can't see secrets. |
 
 ## Why the engine already fits
@@ -44,8 +44,8 @@ kind   name              signed by   content
 31001  city.survey.ack   node        "I recomputed a sample and agree" (public)
 32000  game.open         referees    new round: city, deadlines, referee set, seed commitments
 32001  seed.reveal       referee     its seed share, after all commitments are in
-33000  action            player      join, co-captains, placeFlag, placeJail, tag, capture,
-                                     jailbreak, decoy, vanish, interrogate, bounty
+33000  action            player      join, co-captains, placeFlag, placeJail, tag, goLive, frame,
+                                     endStream, dispute, appeal, decoy, vanish, interrogate, bounty
 33001  position          player      location fix, NIP-44 to each referee
 33002  evidence          player      photo hash + EXIF + pose + BLE sightings, NIP-44 to referees
 34000  batch             referee     canonical order: event ids with sequence numbers
@@ -53,6 +53,8 @@ kind   name              signed by   content
 34002  ping              referee     one ping, NIP-44 to its recipients only
 34003  commit            referee     hash commitments to secrets (flags, jails, BLE keys)
 34004  reveal            referee     the secrets, after the round ends
+34005  ruling            referee     one referee's vote on one review of a disputed stream (public)
+34006  report            referee     that referee's full review, NIP-44 to each leader of both teams
 35000  radio             referee     a commentary line (public)
 ~~~
 
@@ -74,15 +76,17 @@ Each game gets **5 referees; 3 must agree** (a quorum). They are drawn from the 
 
 ### What they do
 
-1. **Order.** Every few seconds, each referee proposes the next batch of pending events. A batch is final when 3 of 5 have signed the same list. Ties break by lowest event id.
+1. **Order.** One referee leads each batch: it proposes the next list of pending events, and the others sign the same list if every event in it is real and unbatched. A batch is final when 3 of 5 have signed it. Each referee signs **one** batch per sequence number, ever, so two different batches can't both reach 3 unless somebody signs twice, and a double signature is public proof against its signer. If a batch goes unsigned for 15 seconds, the next referee on the panel leads.
 2. **Replay.** Each referee feeds the final batch into `GameEngine`, with the secrets only referees hold, and gets the same transition.
 3. **Attest.** Each signs an `outcome` with the transition's public parts: verdicts, awards, highlights, notices. Three matching outcomes make it official.
 4. **Deliver secrets.** Pings, trail updates and interrogation results go out as `ping` events encrypted to their recipients only. Any referee may send them; recipients ignore duplicates.
-5. **Tick.** Referees also submit a signed time tick every minute, so timed rules (pings, parole, deadlines, the 7-day clock) advance even when nobody acts. The engine's `now` is the median of the quorum's clocks for that batch.
+5. **Tick.** The leader proposes a batch at least every minute, empty if need be, so timed rules (pings, parole, deadlines, the 4-day clock) advance even when nobody acts.
 
 ### Time
 
-Every batch carries the median of its signers' clocks. Evidence freshness (2 minutes) is judged against the batch time, not the phone's. A phone with a wrong clock produces stale evidence and fails; the referees don't.
+Every batch carries its leader's clock. The others refuse to sign a batch dated more than 30 seconds ahead of their own clocks, or not after the last batch. Evidence freshness (2 minutes) is judged against the batch time, not the phone's. A phone with a wrong clock produces stale evidence and fails; the referees don't.
+
+A batch dated in the past is still signed. Its signers are already committed to it, and refusing it would stall the game. So a lying leader can hold the clock back for the batches it leads (1 in 5), but never push it forward.
 
 ## Randomness
 
@@ -116,6 +120,26 @@ Photos are too big for events. Media is stored by nodes, content-addressed by SH
 - **Key attestation**, not Play Integrity. Android can prove, with a certificate chain rooted in Google's hardware attestation root, that a signing key lives in secure hardware on a genuine device running an unmodified boot. The app signs each evidence event with such a key. Referees verify the chain **offline**. Play Integrity would need every referee to call Google's servers with its own project; key attestation needs no one.
 - Referees run the same `Verification` checks the engine already has: GPS, time, pose, facing, the leader's reference photo. A node that runs the **photo matcher** adds a visual similarity score to its `outcome`. When at least 3 referees report a score, the median is used; otherwise the check is skipped, as it is today.
 
+## Streams and disputes
+
+Captures and jailbreaks are live streams, so most of the time nothing needs judging: the defenders and the city watched it happen. Referees rule only when a defender disputes.
+
+- **Live.** Within 1 km of the enemy flag, on enemy ground, the referees send the hunter (alone) a `go live` ping from their own position, never the flag's. A capture counts only from a stream live since then. That ping gives something away, which is why anyone on enemy ground is cut off from their team (below). A jailbreak goes live at least 50 m from the (public) jail. Everybody can watch. Every few seconds the phone sends a `frame`: its fix, and the SHA-256 of the video written since the last frame. The hashes, signed as they happen, pin the video: it can't be swapped afterward.
+- **Challenge.** The batch that takes the streamer live draws two words, shown from the start and said with the winning frame, so the referees only ever need the 30 seconds after it. The randomness is seeded by the batch's contents and its leader's millisecond clock, so nobody, streamer included, knows or steers them early.
+- **Winning frame.** A still with its sensor data, checked like any photo. The referees' footage ends 30 seconds later; the stream can go on as long as the phone lasts, a victory lap. Getting caught ends it on the spot. The stream itself can go on as long as the phone lasts: a victory lap, the player's own.
+- **Dispute window.** 10 minutes, for the defending team. Undisputed, it counts.
+- **Review.** Every referee on the panel runs `StreamJudge`, publishes a public vote, and seals its full report to every leader of both teams. The report lists every check: passed, failed, or not run and why. A majority of the panel decides.
+- **Appeal.** A ruling takes effect after a 10-minute appeal window. Each team's leaders may appeal once per round; the second review is final. A review with no majority after 30 minutes lets the stream stand, so a stalled panel can't hold a game hostage.
+- **Leaders aren't paid by rulings.** Captains earn a flat 300 and co-captains 100, win or lose, in place of any win or tie points. The people who see the reports first have no points riding on them.
+
+The checks today: an unbroken stream, the challenge issued and answered in time, and the final still (location, time, pose, facing, the leader's reference photo). Hearing the challenge in the audio and matching the video to its live hashes need the video on the node: they're reported as not run until the media store exists. The photo matcher runs where a node has one.
+
+## Cut off
+
+A jailed player, or anyone on enemy ground, can't talk to their team: no posting anywhere, no reading the team room or DMs. City chat stays readable. What they know gets out when they make it home, or when they say it on a stream everybody hears.
+
+The app enforces this, but a modified app wouldn't, and NIP-17 messages are invisible to relays and referees by design. So team chat and DMs go through the referees instead: sealed to the panel, forwarded to teammates only while the sender isn't cut off, and held for a cut-off recipient until they're home. Referees see team chat; they already see positions. (Players can always phone each other. The game can't stop that, only make it not the game.)
+
 ## City onboarding
 
 The first request for a city asks any node to survey it (`onboarding/`). The node publishes a `city.survey` with its result and a hash.
@@ -131,7 +155,7 @@ The ledger is the set of `outcome` events with awards, signed by a quorum. Highl
 ## Chat and radio
 
 - **City chat** is plain public Nostr notes tagged with the city.
-- **Team chat and DMs** are NIP-17 private messages: sealed, gift-wrapped, invisible to relays and referees alike.
+- **Team chat and DMs** go through the referees, sealed to the panel, so they can enforce the cut-off (see Cut off). Not built in the node yet.
 - **Radio** lines are generated by the referee that finalizes a batch and published as `radio` events. The booth rules stay as they are. It never leaks what the referees know: the `Commentator` only reads what the public outcome contains, plus positions for speculation, and its speculation rules already say intent, not position.
 
 ## Archive
@@ -158,6 +182,7 @@ GitHub and Google are single companies, which is why the archive is a mirror and
 |---|---|
 | A referee goes silent for 10 minutes | The other 4 continue (3 is still a quorum). A replacement is drawn by the current seed and receives the secrets from the remaining referees, re-encrypted to it. |
 | Two referees silent | Replacements drawn as above. Play pauses (no batches) until 3 are live. The clock pauses too: deadlines extend by the pause. |
+| A referee signs two batches for the same sequence | Both signatures are public: proof. It loses eligibility. With 3 of 5, one double-signer and two honest referees who each saw a different batch could finalize both; 4 of 5 would close that, at the cost of stalling whenever two referees are down. |
 | Referees disagree on an outcome | The minority's outcome is ignored. Repeated disagreement costs eligibility. The disagreement is public, so anyone can replay and see who was wrong. |
 | A player's phone is offline | Its actions queue locally and are submitted on reconnect. Evidence freshness (2 min) still applies, so late evidence fails, as it should. |
 | A relay censors a player | Players publish to several relays; referees read from several. |
@@ -186,12 +211,14 @@ The first node (`node/`) proves the core loop, not the whole design. Built so fa
 
 1. **Relay.** A NIP-01 relay: WebSocket, `EVENT`/`REQ`/`CLOSE`, Schnorr signature checks, filters, persistence to disk.
 2. **Game kinds.** Accepts and indexes the kinds above.
-3. **Referee.** A single-referee mode (quorum of 1) that orders game `action` events, replays them through `GameEngine` with a commit-reveal seed, and publishes `outcome` and `radio` events. Multi-referee quorum comes next, once one referee is solid.
+3. **Referee panels.** Every node lists the same roster of referee keys (`REFEREES`). An open request draws a panel of 5 from it by the request's id. The panel runs the commit-reveal seed ceremony, then orders batches by rotating leader and 3-of-5 signatures, replays them through `GameEngine`, and each signs an `outcome`. Double signers are caught. A roster of one is a panel of one.
 4. **Surveyor.** Serves `city.survey` using the existing `onboarding/` pipeline.
 
 5. **Archive.** Mirrors to a git clone or a synced folder, bootstraps from it, and caches surveys there.
-6. **Secrets.** NIP-44 v2 (`Nip44.kt`), checked against the official test vectors. Every in-game player event (actions, positions, BLE keys) is sealed to the referee; anything sent in the clear is ruled `unreadable`. Pings go out as one sealed event per recipient. Accepted flags and BLE keys get a public `commit` (`sha256(preimage|salt)`, the salt an HMAC under the referee's key, so a restored referee reveals what the live one committed to) and a `reveal` when the round ends.
+6. **Secrets.** NIP-44 v2 (`Nip44.kt`), checked against the official test vectors. Every in-game player event (actions, positions, BLE keys) is sealed to each referee on the panel, in one event; anything sent in the clear is ruled `unreadable`. Pings go out as one sealed event per recipient. Accepted flags and BLE keys get a public `commit` (`sha256(preimage|salt)`, the salt keyed by the sealed body, so every referee derives the same one and nobody else can) and a `reveal` when the round ends.
 
-What the prototype cuts, and must not ship with: one referee rules alone (the design says 3 of 5), evidence isn't attested, and a team learns its own flag only from its captain, not from a referee-sealed copy (that arrives with the phone client).
+7. **Stream review.** Streams, disputes, votes counted by majority, sealed reports to every leader, one appeal per team.
 
-Next: quorum ordering and the seed ceremony across 5 referees, key attestation, the media store, the matcher, replacement and pause, and a phone client speaking this protocol instead of `InMemoryBackend`.
+What the prototype cuts, and must not ship with: the video doesn't reach nodes yet (no media store), so viewers can't watch and the audio and video-integrity checks don't run; the roster is a fixed list rather than an eligibility rule, and the panel is drawn by the open request's id rather than the city's last seed. A referee that withholds its seed reveal stalls the round, and one that goes silent isn't replaced. Levels come from the awards each referee has itself seen, so referees on different past games could price a capture differently. Evidence isn't attested, and a team learns its own flag only from its captain, not from a referee-sealed copy (that arrives with the phone client).
+
+Next: key attestation, the media store, the matcher, eligibility and replacement, levels frozen at round open from quorum outcomes, and a phone client speaking this protocol instead of `InMemoryBackend`.

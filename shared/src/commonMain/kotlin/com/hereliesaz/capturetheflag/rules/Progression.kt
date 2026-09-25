@@ -86,8 +86,13 @@ object Points {
     const val FLAG_CAPTURE = 100
     const val TEAM_WIN = 25
     const val TIE = 5
-    /** Leaders whose flag was never taken. */
-    const val FLAG_HELD = 15
+    /**
+     * The captain's pay for the round, win or lose, in place of any win, tie or forfeit payout.
+     * Leaders see every disputed ruling first; a fixed wage means no ruling can pay them.
+     */
+    const val CAPTAIN_STIPEND = 300
+    /** The same, for each co-captain. */
+    const val CO_CAPTAIN_STIPEND = 100
     /** Per ping endured, paid on getting home without being jailed. */
     const val PER_PING_SURVIVED = 2
     /** Per teammate freed in a jailbreak. */

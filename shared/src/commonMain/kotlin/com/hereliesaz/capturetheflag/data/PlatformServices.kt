@@ -11,8 +11,31 @@ interface PlatformServices {
     /** Live location. Null until the first fix. */
     val location: StateFlow<LocationFix?>
 
+    /** Whether the device's location is switched on at all (GPS, Wi-Fi, cell and the rest come as one). */
+    val locationOn: StateFlow<Boolean>
+
     /** Takes a photo and returns it with EXIF, live fix and BLE sightings attached. Null if cancelled. */
     suspend fun takePhoto(): PhotoEvidence?
+
+    /**
+     * The live camera for a capture or jailbreak stream. Records video with sound (a jailbreak's
+     * challenge is spoken) and calls [onFrame] every few seconds with a fresh fix and the SHA-256
+     * of the video written since the previous frame. Shows [challenge] once issued, and [status].
+     * [finishLabel] names the button that takes the qualifying or winning frame, a still handed
+     * to [onFinish] while recording carries on; null hides it. In [lap]
+     * mode (after the winning frame) no frames are sent: the stream is the player's own, and
+     * ending it hands [onFinish] null, as does abandoning a stream.
+     */
+    @Composable
+    fun LiveCamera(
+        challenge: String?,
+        status: String,
+        lap: Boolean,
+        finishLabel: String?,
+        onFrame: suspend (LocationFix, String) -> Unit,
+        onFinish: (PhotoEvidence?) -> Unit,
+        modifier: Modifier,
+    )
 
     /** Captures a selfie for registration. Returns a content URI, or null if cancelled. */
     suspend fun takeSelfie(): String?

@@ -10,6 +10,7 @@ import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.Highlight
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.model.Ping
 import com.hereliesaz.capturetheflag.model.PlayerId
 import com.hereliesaz.capturetheflag.model.User
@@ -49,13 +50,27 @@ interface GameBackend {
 
     suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence): Verdict
 
-    suspend fun captureFlag(cityName: String, photo: PhotoEvidence): Verdict
+    /**
+     * Goes live from [fix]: a flag run any time (the app asks within 1 km of the enemy flag), a
+     * jailbreak at least 50 m from the jail. The stream's id is in the game's `streams` under
+     * this player.
+     */
+    suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix): Verdict
 
-    /** Photograph the enemy jail to free every jailed teammate. */
-    suspend fun jailbreak(cityName: String, photo: PhotoEvidence): Verdict
+    /** One frame of this player's live stream: fix, and the hash of the video written since the last frame. */
+    suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String): Verdict
+
+    /** The winning frame, said with the challenge. The referees' footage ends 30 s later; then the defenders may dispute. */
+    suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence): Verdict
+
+    /** A defender disputes a finished stream. */
+    suspend fun dispute(cityName: String, streamId: String, reason: String): Verdict
     suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence): Verdict
 
     suspend fun reportLocation(cityName: String, fix: LocationFix)
+
+    /** The phone's location was just switched off. On enemy ground, that's an automatic jailing. */
+    suspend fun locationOff(cityName: String)
 
     /** Server-issued BLE token for this device to advertise right now. Rotates. */
     suspend fun currentBleToken(cityName: String): String

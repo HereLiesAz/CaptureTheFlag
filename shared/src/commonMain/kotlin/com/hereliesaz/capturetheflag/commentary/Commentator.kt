@@ -18,6 +18,11 @@ import com.hereliesaz.capturetheflag.rules.PingSchedule
 import com.hereliesaz.capturetheflag.rules.Progression
 import kotlin.random.Random
 
+/** The play window as the booth says it: "Four", not "4". Follows [GameRules.PLAY_WINDOW]. */
+private val playDays = (GameRules.PLAY_WINDOW / GameRules.DAY).toInt().let {
+    listOf("Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten").getOrElse(it) { n -> "$n" }
+}
+
 /** One line of the broadcast. */
 data class Commentary(val at: Millis, val text: String)
 
@@ -122,8 +127,8 @@ class Commentator(
                 "That's the whistle on sign-ups. ${a.players.size} dealt, captains drawn by lottery, which is how most leadership works.",
             )) + captains(a)
             is GamePhase.Active -> placements(b, a) + pick(
-                "Flags are down, jails are open, and we are LIVE in ${a.city.name}. Seven days. Somebody's going home a hero, and everybody's going home.",
-                "And we're underway in ${a.city.name}. Seven days on the clock. Watch your step, watch your phone, watch your back.",
+                "Flags are down, jails are open, and we are LIVE in ${a.city.name}. $playDays days. Somebody's going home a hero, and everybody's going home.",
+                "And we're underway in ${a.city.name}. $playDays days on the clock. Watch your step, watch your phone, watch your back.",
             )
             is GamePhase.Ended -> listOf(ending(a, p.outcome))
             is GamePhase.Signup -> emptyList()
@@ -506,7 +511,7 @@ class Commentator(
             val prior = hero?.let { career(it.id).captures } ?: 0
             pick(
                 "IT'S OVER! $name has the flag in frame! ${o.winner.label} takes ${a.city.name}! Somewhere a flag realizes it was never really theirs!",
-                "THE FLAG! THE FLAG! $name, one photograph, and ${o.winner.label} wins it all! Seven days of fear, ended by a camera phone!",
+                "THE FLAG! THE FLAG! $name, one photograph, and ${o.winner.label} wins it all! Days of fear, ended by a camera phone!",
             ) + when (prior) {
                 0 -> " First capture of $name's career."
                 1 -> " That's number two for $name."

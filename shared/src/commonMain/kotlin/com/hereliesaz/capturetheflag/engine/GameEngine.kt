@@ -14,7 +14,11 @@ import com.hereliesaz.capturetheflag.model.Highlight
 import com.hereliesaz.capturetheflag.model.HighlightKind
 import com.hereliesaz.capturetheflag.model.Incursion
 import com.hereliesaz.capturetheflag.model.RoundStats
+import com.hereliesaz.capturetheflag.model.Role
 import com.hereliesaz.capturetheflag.model.Jail
+import com.hereliesaz.capturetheflag.model.LiveStream
+import com.hereliesaz.capturetheflag.model.Dispute
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.Outcome
@@ -28,6 +32,8 @@ import com.hereliesaz.capturetheflag.model.Territory
 import com.hereliesaz.capturetheflag.model.User
 import com.hereliesaz.capturetheflag.rules.BleTokenRegistry
 import com.hereliesaz.capturetheflag.rules.GameRules
+import com.hereliesaz.capturetheflag.rules.JailRules
+import com.hereliesaz.capturetheflag.data.HeuristicTravel
 import com.hereliesaz.capturetheflag.rules.Honors
 import com.hereliesaz.capturetheflag.rules.Most
 import com.hereliesaz.capturetheflag.rules.PingSchedule
@@ -71,6 +77,11 @@ class GameEngine(
     private val random: Random = Random.Default,
     /** Current level of a user, from the points ledger. Snapshotted when teams are dealt. */
     private val levelOf: (PlayerId) -> Int = { 1 },
+    /** Whether a user has never finished a round. Captains are drawn from veterans when a team has any. */
+    private val isRookie: (PlayerId) -> Boolean = { false },
+    /** How long someone jailed at a point has to report to a jail, for jailings nobody computed a window for. */
+    private val jailWindow: (from: GeoPoint, jail: GeoPoint, now: Millis) -> Long =
+        { from, jail, _ -> JailRules.reportWindow(HeuristicTravel.estimate(from, jail)) },
 ) {
 
     fun newRound(id: GameId, city: City, territory: Territory, now: Millis) =
@@ -87,18 +98,70 @@ class GameEngine(
     fun tick(game: Game, now: Millis): Transition = when (val ph = game.phase) {
         is GamePhase.Signup -> if (now < ph.deadline) Transition(game) else closeSignup(game, now)
         is GamePhase.FlagPlacement -> placementTick(game, ph.deadline, now)
-        is GamePhase.Active -> if (now >= ph.deadline) end(game, Outcome.Tie, now) else {
-            val judged = disqualifyLate(game, now)
-            val paroled = judged + parole(judged.game, now)
-            val walked = paroled + walkDecoys(paroled.game, now)
-            walked + duePings(walked.game, now)
+        is GamePhase.Active -> {
+            val streamed = streamTick(game, now)
+            val capturing = streamed.game.streams.values.any { it.purpose == StreamPurpose.CAPTURE && (it.open || it.pending) }
+            when {
+                streamed.game.phase !is GamePhase.Active -> streamed
+                // A capture under way or under dispute holds the final whistle until it's settled.
+                now >= ph.deadline && !capturing -> streamed + end(streamed.game, Outcome.Tie, now)
+                else -> activeTick(streamed, now)
+            }
         }
         is GamePhase.Ended -> Transition(game)
     }.settled()
 
+    private fun activeTick(streamed: Transition, now: Millis): Transition {
+            val judged = streamed + disqualifyLate(streamed.game, now)
+            val paroled = judged + parole(judged.game, now)
+            val walked = paroled + walkDecoys(paroled.game, now)
+            return walked + duePings(walked.game, now)
+    }
+
+    /**
+     * The phone says its location was just switched off. Nothing happens yet: a player can't
+     * be seen, but can't get home either. Their next fix off enemy ground jails them.
+     */
+    fun locationOff(game: Game, player: PlayerId, now: Millis): Transition {
+        val p = game.players[player] ?: return Transition(game)
+        val last = game.lastFix[player] ?: return Transition(game)
+        if (game.phase !is GamePhase.Active || p.isJailed || game.territory.ownerOf(last.point) != p.team.opponent) return Transition(game)
+        return Transition(game.copy(dark = game.dark + player))
+    }
+
+    /**
+     * Sneaking home dark: last seen on enemy ground, now off it, after a gap of
+     * [GameRules.DARK_GAP] or with location switched off in between. Null when that's not it.
+     */
+    private fun crossedDark(g: Game, p: Player, fix: LocationFix): Transition? {
+        val last = g.lastFix[p.id] ?: return null
+        if (g.territory.ownerOf(last.point) != p.team.opponent) return null
+        if (g.territory.ownerOf(fix.point) == p.team.opponent) return null
+        if (p.id !in g.dark && fix.at - last.at < GameRules.DARK_GAP) return null
+        return jailDark(g, p.id, fix.at)
+    }
+
+    /** Jails [id] where they were last seen, if that was on enemy ground. */
+    private fun jailDark(g: Game, id: PlayerId, now: Millis): Transition {
+        val p = g.players[id]?.takeIf { !it.isJailed } ?: return Transition(g)
+        val last = g.lastFix[id] ?: return Transition(g)
+        if (g.territory.ownerOf(last.point) != p.team.opponent) return Transition(g)
+        val jail = g.jails[p.team.opponent]?.location ?: return Transition(g)
+        val jailed = g.copy(
+            players = g.players + (id to p.copy(jailedAt = now, jailDeadline = now + jailWindow(last.point, jail, now), reportingSince = null, reportedAt = null, breakoutSince = null)),
+            incursions = g.incursions - id,
+            flagZone = g.flagZone - id,
+            vanishPending = g.vanishPending - id,
+            dark = g.dark - id,
+        )
+        var t = Transition(jailed, awards = listOf(g.award(id, Points.JAILED.toLong(), "Jailed", now)), notices = listOf("${p.user.displayName} went dark to sneak home. Jailed."))
+        t.game.streams.values.firstOrNull { it.by == id && it.open }?.let { t += dropStream(t.game, it, "Went dark", now) }
+        return t.copy(verdict = Verdict.Valid)
+    }
+
     private fun closeSignup(game: Game, now: Millis): Transition {
         if (game.signups.size < 2 * GameRules.MIN_PLAYERS_PER_TEAM) return end(game, Outcome.Cancelled, now)
-        val players = TeamAssignment.assign(game.signups, random, levelOf)
+        val players = TeamAssignment.assign(game.signups, random, levelOf, isRookie)
         return Transition(
             game.copy(players = players, phase = GamePhase.FlagPlacement(now + GameRules.FLAG_PLACEMENT_WINDOW)),
         )
@@ -120,7 +183,7 @@ class GameEngine(
     fun appointCoCaptains(game: Game, captain: PlayerId, picks: Set<PlayerId>): Transition {
         if (game.phase is GamePhase.Ended || game.phase is GamePhase.Signup) return game.reject("Teams not formed")
         val updated = TeamAssignment.appointCoCaptains(game.players, captain, picks)
-            ?: return game.reject("Only the captain may appoint up to two teammates")
+            ?: return game.reject("Only the captain may appoint up to two teammates, and no rookies")
         return Transition(game.copy(players = updated))
     }
 
@@ -172,7 +235,11 @@ class GameEngine(
     /** Ingests a device fix; opens or closes incursions, fires Tripwires and Bloodhound trails. */
     fun reportLocation(game: Game, player: PlayerId, fix: LocationFix): Transition {
         val p = game.players[player] ?: return game.reject("Not in this game")
-        var g = game.copy(lastFix = game.lastFix + (player to fix))
+        if (game.phase is GamePhase.Active && !p.isJailed) crossedDark(game, p, fix)?.let {
+            return (it + Transition(it.game.copy(lastFix = it.game.lastFix + (player to fix)))).settled()
+        }
+        // Seen again on enemy ground: whatever the phone did, they're visible now.
+        var g = game.copy(lastFix = game.lastFix + (player to fix), dark = game.dark - player)
         if (g.phase is GamePhase.Active && p.isJailed) return reportToJail(g.copy(incursions = g.incursions - player), p, fix)
         if (g.phase !is GamePhase.Active || p.isJailed) return Transition(g.copy(incursions = g.incursions - player))
         val inEnemy = g.territory.ownerOf(fix.point) == p.team.opponent
@@ -208,8 +275,8 @@ class GameEngine(
             }
         }
         g = g.copy(trails = trails)
-        val held = holdBreakout(g, g.players.getValue(player), fix)
-        return (held + Transition(held.game, pings = pings, awards = mentored(held.game, awards), highlights = highlights) + duePings(held.game, fix.at)).settled()
+        g = nearFlag(g, p, fix)?.let { (zoned, ping) -> ping?.let { pings += it }; zoned } ?: g
+        return (Transition(g, pings = pings, awards = mentored(g, awards), highlights = highlights) + duePings(g, fix.at)).settled()
     }
 
     /**
@@ -331,14 +398,6 @@ class GameEngine(
 
     private fun near(game: Game, who: PlayerId, point: GeoPoint, radiusM: Double) =
         radiusM > 0 && game.lastFix[who]?.point?.distanceTo(point)?.let { it <= radiusM } == true
-
-    /** [visualMatch] is the matcher's similarity to the leader's registration photo, if one ran. */
-    fun captureFlag(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Transition {
-        if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
-        val v = Verification.flagCapture(game, by, photo, now, visualMatch)
-        if (v != Verdict.Valid) return Transition(game, v)
-        return end(game, Outcome.FlagCaptured(game.players.getValue(by).team, by), now).settled()
-    }
 
     /**
      * Sends a fake anonymous ping to the enemy from [at], which must be in their territory.
@@ -502,13 +561,17 @@ class GameEngine(
                 jailedAt = now, jailDeadline = now + reportWindowMs, reportingSince = null, reportedAt = null, breakoutSince = null,
             )),
             incursions = game.incursions - target,
+            flagZone = game.flagZone - target,
             vanishPending = game.vanishPending - target,
             scoredTags = game.scoredTags + key,
         )
         val bounty = if (multiplier > 1.0 && awards.isNotEmpty()) {
             listOf(game.highlight(HighlightKind.BOUNTY_COLLECTED, by, target, now, (multiplier * 10).toInt()))
         } else emptyList()
-        return Transition(g, awards = mentored(g, awards), highlights = bounty)
+        val base = Transition(g, awards = mentored(g, awards), highlights = bounty)
+        // Caught live: the stream ends the moment the tag lands.
+        val live = g.streams.values.firstOrNull { it.by == target && it.open } ?: return base
+        return (base + dropStream(g, live, "Caught", now)).copy(verdict = Verdict.Valid)
     }
 
     private fun parole(game: Game, now: Millis): Transition {
@@ -534,39 +597,234 @@ class GameEngine(
     }
 
     /**
-     * Starts a jailbreak: a free player photographs the enemy jail, then must stay within range
-     * of it for [GameRules.JAILBREAK_HOLD] unbroken. Leaving, or being jailed, ends the attempt.
-     * On completion every teammate held (reported or en route, never the disqualified) walks free.
+     * Goes live. Everybody can watch, defenders included, and the city is told. The challenge
+     * is drawn now and shown for the whole stream: two words said on camera with the winning
+     * frame, so the referees only ever need the footage from there on.
+     *
+     * A flag run streams the end of the hunt: within [GameRules.FLAG_ZONE_M] of the enemy flag
+     * the app asks the player to go live (a [PingKind.GO_LIVE] ping, while the app is running),
+     * and a capture only counts from a stream live since then, give or take
+     * [GameRules.STREAM_ZONE_GRACE]. The hunter is exposed to everybody from there on, and
+     * getting caught ends it on the spot.
+     *
+     * A jailbreak (the jail is public) starts at least [GameRules.STREAM_APPROACH_M] out, so the
+     * walk-in is on camera, and holds the jail for [GameRules.JAILBREAK_HOLD].
      */
-    fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Transition {
+    fun goLive(game: Game, by: PlayerId, id: String, purpose: StreamPurpose, fix: LocationFix, now: Millis): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
-        val v = Verification.jailbreak(game, by, photo, now, visualMatch)
-        if (v != Verdict.Valid) return Transition(game, v)
-        val rescuer = game.players.getValue(by)
-        if (rescuer.breakoutSince != null) return game.reject("Jailbreak already under way")
-        if (game.team(rescuer.team).none { it.isJailed && !it.disqualified }) return game.reject("No one to free")
-        return Transition(game.copy(players = game.players + (by to rescuer.copy(breakoutSince = now))))
+        val p = game.players[by] ?: return game.reject("Not in this game")
+        if (p.isJailed) return game.reject(if (purpose == StreamPurpose.CAPTURE) "Jailed players cannot capture" else "Jailed players cannot break anyone out")
+        if (id in game.streams) return game.reject("Stream id already used")
+        if (game.streams.values.any { it.by == by && it.open }) return game.reject("Already live")
+        if (fix.accuracyM > GameRules.MAX_FIX_ACCURACY_M) return game.reject("Location too imprecise")
+        val target = when (purpose) {
+            StreamPurpose.CAPTURE -> game.flags[p.team.opponent]?.location ?: return game.reject("Enemy flag not placed")
+            StreamPurpose.JAILBREAK -> {
+                if (game.team(p.team).none { it.isJailed && !it.disqualified }) return game.reject("No one to free")
+                if (game.streams.values.any { it.purpose == StreamPurpose.JAILBREAK && it.open && game.players[it.by]?.team == p.team }) return game.reject("Jailbreak already under way")
+                val jail = game.jails[p.team.opponent]?.location ?: return game.reject("Enemy jail not placed")
+                if (fix.point.distanceTo(jail) < GameRules.STREAM_APPROACH_M) return game.reject("Go live at least ${GameRules.STREAM_APPROACH_M.toInt()} m out, so the approach is on camera")
+                jail
+            }
+        }
+        val words = "${CHALLENGE_WORDS.random(random)} ${CHALLENGE_WORDS.random(random)}"
+        val s = LiveStream(id, by, purpose, target, now, fix, challenge = words, challengeAt = now)
+        val headline = if (purpose == StreamPurpose.CAPTURE) "is live, hunting." else "is live on a jailbreak."
+        return Transition(game.copy(streams = game.streams + (id to s)), notices = listOf("${p.user.displayName} $headline"))
     }
 
-    /** A rescuer's fix: still at the jail keeps the attempt alive; the full hold springs everyone. */
-    private fun holdBreakout(game: Game, rescuer: Player, fix: LocationFix): Transition {
-        val since = rescuer.breakoutSince ?: return Transition(game)
-        val jail = game.jails[rescuer.team.opponent]
-        val there = jail != null && fix.accuracyM <= GameRules.MAX_FIX_ACCURACY_M &&
-            fix.point.distanceTo(jail.location) <= GameRules.JAIL_REPORT_RADIUS_M
-        if (!there) return Transition(
-            game.copy(players = game.players + (rescuer.id to rescuer.copy(breakoutSince = null))),
-            highlights = listOf(game.highlight(HighlightKind.BREAKOUT_ABANDONED, rescuer.id, null, fix.at, ((fix.at - since) / GameRules.MINUTE).toInt())),
-        )
-        if (fix.at - since < GameRules.JAILBREAK_HOLD) return Transition(game)
-        val done = game.copy(players = game.players + (rescuer.id to rescuer.copy(breakoutSince = null)))
-        val freed = done.team(rescuer.team).filter { it.isJailed && !it.disqualified }
-        if (freed.isEmpty()) return Transition(done)
+    /**
+     * Tracks when [p] came within [GameRules.FLAG_ZONE_M] of the enemy flag, and asks them to go
+     * live on the way in unless they already are. Null when nothing changes.
+     */
+    private fun nearFlag(g: Game, p: Player, fix: LocationFix): Pair<Game, Ping?>? {
+        val flag = g.flags[p.team.opponent]?.location ?: return null
+        // Only on enemy ground, where they're cut off: a zone reaching over the line mustn't tip off anyone who can talk.
+        val near = g.territory.ownerOf(fix.point) == p.team.opponent && fix.point.distanceTo(flag) <= GameRules.FLAG_ZONE_M
+        val since = g.flagZone[p.id]
+        return when {
+            near && since == null -> {
+                val live = g.streams.values.any { it.by == p.id && it.open }
+                g.copy(flagZone = g.flagZone + (p.id to fix.at)) to
+                    if (live) null else Ping(p.id, 0, fix.point, fix.at, null, setOf(p.id), PingKind.GO_LIVE)
+            }
+            !near && since != null -> g.copy(flagZone = g.flagZone - p.id) to null
+            else -> null
+        }
+    }
+
+    /** One frame of a live stream: where the phone is, and the hash of the video since the last frame. */
+    fun streamFrame(game: Game, by: PlayerId, id: String, fix: LocationFix, chunk: String, now: Millis): Transition {
+        val s = game.streams[id]?.takeIf { it.by == by } ?: return game.reject("No such stream")
+        if (!s.open) return game.reject("Stream is over")
+        if (fix.at <= s.lastFrame.at) return game.reject("Frame out of order")
+        if (fix.at - s.lastFrame.at > GameRules.STREAM_MAX_GAP) return dropStream(game, s, "Stream dropped", now)
+        val p = game.players.getValue(by)
+        var next = s.copy(lastFrame = fix, chunks = s.chunks + chunk)
+        var g = game
+        if (s.purpose == StreamPurpose.JAILBREAK && s.qualifiedAt == null) {
+            val there = fix.accuracyM <= GameRules.MAX_FIX_ACCURACY_M && fix.point.distanceTo(s.target) <= GameRules.JAIL_REPORT_RADIUS_M
+            when {
+                there && s.arrivedAt == null -> {
+                    next = next.copy(arrivedAt = fix.at)
+                    g = g.copy(players = g.players + (by to p.copy(breakoutSince = fix.at)))
+                }
+                !there && s.arrivedAt != null -> return dropStream(game, s, "Left the jail", now)
+            }
+        }
+        g = g.copy(streams = g.streams + (id to next), lastFix = g.lastFix + (by to fix))
+        g = nearFlag(g, p, fix)?.first ?: g
+        return if (next.qualifiedAt != null && now >= next.qualifiedAt + GameRules.STREAM_CHALLENGE_WINDOW) closeFootage(g, next, now)
+        else Transition(g)
+    }
+
+    /**
+     * The winning frame: [photo], a still from the stream with its sensor data, checked like any
+     * capture photo. For a flag run, the stream must have been live since the crossing; for a
+     * jailbreak, the hold must be done. The player says the challenge with it, and the referees'
+     * footage ends [GameRules.STREAM_CHALLENGE_WINDOW] later. The stream itself carries on as
+     * long as the player likes: a victory lap the game doesn't judge. Then the defenders have
+     * [GameRules.STREAM_CONTEST_WINDOW] to dispute.
+     */
+    fun endStream(game: Game, by: PlayerId, id: String, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Transition {
+        val s = game.streams[id]?.takeIf { it.by == by } ?: return game.reject("No such stream")
+        if (!s.open || s.qualifiedAt != null) return game.reject("Stream is over")
+        if (now - s.lastFrame.at > GameRules.STREAM_MAX_GAP) return dropStream(game, s, "Stream dropped", now)
+        val v = when (s.purpose) {
+            StreamPurpose.CAPTURE -> {
+                val near = game.flagZone[by]
+                when {
+                    near != null && s.startedAt > near + GameRules.STREAM_ZONE_GRACE ->
+                        Verdict.Rejected("You went live too late. Back off ${GameRules.FLAG_ZONE_M.toInt()} m, go live, and come back")
+                    else -> Verification.flagCapture(game, by, photo, now, visualMatch)
+                }
+            }
+            StreamPurpose.JAILBREAK -> {
+                val held = s.arrivedAt?.let { now - it } ?: 0
+                if (held < GameRules.JAILBREAK_HOLD) Verdict.Rejected("Stay on camera at the jail for ${GameRules.JAILBREAK_HOLD / GameRules.MINUTE} minutes")
+                else Verification.jailbreak(game, by, photo, now, visualMatch)
+            }
+        }
+        if (v != Verdict.Valid) return Transition(game, v)
+        val name = game.players.getValue(by).user.displayName
+        val won = s.copy(qualifiedAt = now, finish = photo, zoneAt = game.flagZone[by])
         return Transition(
-            done.copy(players = done.players + freed.associate { it.id to it.freed() }),
-            awards = listOf(done.award(rescuer.id, Points.JAILBREAK_PER_FREED.toLong() * freed.size, "Freed ${freed.size}", fix.at)),
-            notices = listOf("${rescuer.user.displayName} broke ${freed.size} out of jail."),
+            game.copy(streams = game.streams + (id to won)),
+            notices = listOf("$name has the winning frame! Listen for the challenge: \"${s.challenge}\"."),
         )
+    }
+
+    /**
+     * The referees' footage ends [GameRules.STREAM_CHALLENGE_WINDOW] after the winning frame, if
+     * the frames kept coming up to then. The stream itself carries on as the player's victory lap.
+     */
+    private fun closeFootage(game: Game, s: LiveStream, now: Millis): Transition {
+        val end = s.qualifiedAt!! + GameRules.STREAM_CHALLENGE_WINDOW
+        if (s.lastFrame.at < end - GameRules.STREAM_MAX_GAP) return dropStream(game, s, "Stream dropped", now)
+        val name = game.players.getValue(s.by).user.displayName
+        return Transition(
+            game.copy(streams = game.streams + (s.id to s.copy(endedAt = end, contestUntil = end + GameRules.STREAM_CONTEST_WINDOW))),
+            notices = listOf("$name's stream is in. The defenders have ${GameRules.STREAM_CONTEST_WINDOW / GameRules.MINUTE} minutes to dispute it."),
+        )
+    }
+
+    /** A defender objects to a finished stream. The referees' automated checks decide; nobody's opinion does. */
+    fun dispute(game: Game, by: PlayerId, id: String, reason: String, now: Millis): Transition {
+        val s = game.streams[id] ?: return game.reject("No such stream")
+        val p = game.players[by] ?: return game.reject("Not in this game")
+        if (p.team != game.players.getValue(s.by).team.opponent) return game.reject("Only the defending team can dispute")
+        if (!s.pending || now >= (s.contestUntil ?: 0)) return game.reject("Too late to dispute")
+        if (s.dispute != null) return game.reject("Already disputed")
+        return Transition(
+            game.copy(streams = game.streams + (id to s.copy(dispute = Dispute(by, now, reason), reviewSince = now))),
+            notices = listOf("${p.user.displayName} disputes ${game.players.getValue(s.by).user.displayName}'s stream. The referees are reviewing it."),
+        )
+    }
+
+    /**
+     * The referees' ruling on review [review] of a disputed stream: [upheld] means it stands.
+     * The leaders of both teams see the full reports first. A first ruling takes effect once
+     * [GameRules.STREAM_APPEAL_WINDOW] passes unappealed; a ruling on appeal is final.
+     */
+    fun rule(game: Game, id: String, review: Int, upheld: Boolean, now: Millis): Transition {
+        val s = game.streams[id] ?: return game.reject("No such stream")
+        if (!s.pending || s.dispute == null || s.ruling != null || review != s.review) return game.reject("Nothing to rule on")
+        if (s.appealedBy != null) return settle(game, s, upheld, now)
+        val ruled = s.copy(ruling = upheld, ruledAt = now)
+        val name = game.players.getValue(s.by).user.displayName
+        return Transition(
+            game.copy(streams = game.streams + (id to ruled)),
+            notices = listOf("The referees have ruled on $name's stream. The leaders have ${GameRules.STREAM_APPEAL_WINDOW / GameRules.MINUTE} minutes to appeal."),
+        )
+    }
+
+    /** A leader sends a ruling back for a second review. One appeal per team per round. */
+    fun appeal(game: Game, by: PlayerId, id: String, now: Millis): Transition {
+        val s = game.streams[id] ?: return game.reject("No such stream")
+        val p = game.players[by] ?: return game.reject("Not in this game")
+        if (!p.isLeader) return game.reject("Only captains and co-captains can appeal")
+        if (p.team in game.appealsUsed) return game.reject("Your team has used its appeal this round")
+        val ruledAt = s.ruledAt
+        if (!s.pending || s.ruling == null || ruledAt == null || s.appealedBy != null) return game.reject("Nothing to appeal")
+        if (now >= ruledAt + GameRules.STREAM_APPEAL_WINDOW) return game.reject("Too late to appeal")
+        val again = s.copy(review = s.review + 1, reviewSince = now, ruling = null, ruledAt = null, appealedBy = p.team)
+        return Transition(
+            game.copy(streams = game.streams + (id to again), appealsUsed = game.appealsUsed + p.team),
+            notices = listOf("${p.user.displayName} appeals. The referees review it again, and this time it's final."),
+        )
+    }
+
+    private fun settle(game: Game, s: LiveStream, upheld: Boolean, now: Millis) =
+        if (upheld) complete(game, s, now, "Upheld on review.") else dropStream(game, s, "Failed review", now)
+
+    /** Challenges falling due, streams gone quiet, and dispute windows closing. */
+    private fun streamTick(game: Game, now: Millis): Transition {
+        var t = Transition(game)
+        for (id in game.streams.keys) {
+            val s = t.game.streams.getValue(id)
+            t += when {
+                s.open && t.game.players[s.by]?.isJailed == true -> dropStream(t.game, s, "Caught", now)
+                s.open && s.qualifiedAt != null && now >= s.qualifiedAt + GameRules.STREAM_CHALLENGE_WINDOW -> closeFootage(t.game, s, now)
+                s.open && now - s.lastFrame.at > GameRules.STREAM_MAX_GAP -> dropStream(t.game, s, "Stream dropped", now)
+                s.pending && s.dispute == null && now >= s.contestUntil!! -> complete(t.game, s, now, null)
+                s.pending && s.ruling != null && now >= s.ruledAt!! + GameRules.STREAM_APPEAL_WINDOW -> settle(t.game, s, s.ruling, now)
+                s.pending && s.dispute != null && s.ruling == null && now >= s.reviewSince!! + GameRules.STREAM_RULING_WINDOW -> complete(t.game, s, now, "The review ran out of time; it stands.")
+                else -> Transition(t.game)
+            }
+            if (t.game.phase !is GamePhase.Active) break
+        }
+        return t
+    }
+
+    private fun dropStream(game: Game, s: LiveStream, why: String, now: Millis): Transition {
+        val p = game.players.getValue(s.by)
+        val g = game.copy(
+            streams = game.streams + (s.id to s.copy(void = why, upheld = if (s.endedAt != null) false else null)),
+            players = if (p.breakoutSince != null) game.players + (p.id to p.copy(breakoutSince = null)) else game.players,
+        )
+        val abandoned = if (s.purpose == StreamPurpose.JAILBREAK && s.arrivedAt != null)
+            listOf(game.highlight(HighlightKind.BREAKOUT_ABANDONED, p.id, null, now, ((now - s.arrivedAt) / GameRules.MINUTE).toInt())) else emptyList()
+        return Transition(g, Verdict.Rejected(why), notices = listOf("${p.user.displayName}'s stream is void: $why."), highlights = abandoned)
+    }
+
+    /** A stream that stands: the flag falls, or the prisoners walk. */
+    private fun complete(game: Game, s: LiveStream, now: Millis, note: String?): Transition {
+        val g = game.copy(streams = game.streams + (s.id to s.copy(upheld = true)))
+        val rescuer = g.players.getValue(s.by)
+        val said = listOfNotNull(note?.let { "${rescuer.user.displayName}'s stream: $it" })
+        return when (s.purpose) {
+            StreamPurpose.CAPTURE -> Transition(g, notices = said) + end(g, Outcome.FlagCaptured(rescuer.team, s.by), now)
+            StreamPurpose.JAILBREAK -> {
+                val done = g.copy(players = g.players + (rescuer.id to rescuer.copy(breakoutSince = null)))
+                val freed = done.team(rescuer.team).filter { it.isJailed && !it.disqualified }
+                if (freed.isEmpty()) return Transition(done, notices = said)
+                Transition(
+                    done.copy(players = done.players + freed.associate { it.id to it.freed() }),
+                    awards = listOf(done.award(rescuer.id, Points.JAILBREAK_PER_FREED.toLong() * freed.size, "Freed ${freed.size}", now)),
+                    notices = said + "${rescuer.user.displayName} broke ${freed.size} out of jail.",
+                )
+            }
+        }
     }
 
     private fun Player.freed() = copy(jailedAt = null, jailDeadline = null, reportingSince = null, reportedAt = null)
@@ -578,30 +836,30 @@ class GameEngine(
     private fun end(game: Game, outcome: Outcome, now: Millis): Transition {
         // The freeze lifts at the final whistle, except for the disqualified.
         val game = game.copy(players = game.players.mapValues { (_, p) -> if (p.isJailed && !p.disqualified) p.freed() else p })
+        // Leaders are paid a fixed wage instead of any win, tie or forfeit payout: see Points.CAPTAIN_STIPEND.
+        val players = game.players.values.filterNot { it.isLeader }
         val awards = when (outcome) {
             is Outcome.FlagCaptured -> buildList {
                 add(game.award(outcome.by, Points.FLAG_CAPTURE.toLong(), "Captured the flag", now))
-                game.team(outcome.winner).forEach { add(game.award(it.id, Points.TEAM_WIN.toLong(), "Team won", now)) }
-                game.team(outcome.winner).filter { it.isLeader }
-                    .forEach { add(game.award(it.id, Points.FLAG_HELD.toLong(), "Flag held", now)) }
+                players.filter { it.team == outcome.winner }.forEach { add(game.award(it.id, Points.TEAM_WIN.toLong(), "Team won", now)) }
             }
-            Outcome.Tie -> game.players.values.flatMap { p ->
-                listOfNotNull(
-                    game.award(p.id, Points.TIE.toLong(), "Tie", now),
-                    if (p.isLeader && p.team in game.flags) game.award(p.id, Points.FLAG_HELD.toLong(), "Flag held", now) else null,
-                )
-            }
-            is Outcome.Forfeit -> game.team(outcome.loser.opponent)
+            Outcome.Tie -> players.map { game.award(it.id, Points.TIE.toLong(), "Tie", now) }
+            is Outcome.Forfeit -> players.filter { it.team == outcome.loser.opponent }
                 .map { game.award(it.id, Points.TEAM_WIN.toLong(), "Opponent forfeited", now) }
             Outcome.Cancelled -> emptyList()
         }
+        val wages = if (outcome == Outcome.Cancelled) emptyList() else game.players.values.filter { it.isLeader }.map {
+            if (it.role == Role.CAPTAIN) game.award(it.id, Points.CAPTAIN_STIPEND.toLong(), "Captain", now)
+            else game.award(it.id, Points.CO_CAPTAIN_STIPEND.toLong(), "Co-captain", now)
+        }
+        // Honors are for play: the wage doesn't count toward MVP, and mentors don't take a cut of it.
         val withHonors = if (outcome == Outcome.Cancelled) awards else awards + honors(game, awards, now)
         val listed = if (outcome == Outcome.Cancelled) emptyList() else Most.entries.flatMap { m ->
             Honors.board(game, m).mapIndexed { i, (id, _) -> Highlight(HighlightKind.MADE_LIST, id, null, game.id, game.city.id, now, i + 1, m.title) }
-        }
+        } + game.players.values.filter { it.isLeader }.map { Highlight(HighlightKind.LED, it.id, null, game.id, game.city.id, now, note = it.role.name) }
         return Transition(
             game.copy(phase = GamePhase.Ended(outcome, now), incursions = emptyMap(), decoyWalks = emptyList()),
-            awards = mentored(game, withHonors),
+            awards = mentored(game, withHonors) + wages,
             highlights = listed,
         )
     }
@@ -704,3 +962,18 @@ class GameEngine(
         }
     }
 }
+
+/** Challenge words: short, common, hard to mishear, and easy for speech recognition to confirm. */
+private val CHALLENGE_WORDS = listOf(
+    "amber", "anchor", "apple", "arrow", "badge", "banjo", "barrel", "basket", "beacon", "bishop",
+    "blanket", "bottle", "bridge", "bucket", "butter", "cabin", "camel", "candle", "canyon", "carpet",
+    "castle", "cedar", "cherry", "chimney", "cinder", "circus", "clover", "cobalt", "comet", "copper",
+    "cotton", "cradle", "crystal", "dagger", "desert", "dolphin", "dragon", "eagle", "ember", "falcon",
+    "feather", "fiddle", "forest", "fossil", "garden", "ginger", "glacier", "goblet", "granite", "hammer",
+    "harbor", "helmet", "hollow", "honey", "island", "ivory", "jacket", "jasper", "jungle", "kettle",
+    "ladder", "lantern", "lemon", "lizard", "magnet", "maple", "marble", "meadow", "mirror", "monkey",
+    "needle", "nickel", "oyster", "paddle", "parrot", "pepper", "pickle", "pillow", "pirate", "planet",
+    "pocket", "pony", "puzzle", "rabbit", "raven", "ribbon", "rocket", "saddle", "salmon", "shadow",
+    "silver", "spider", "spoon", "statue", "summit", "thunder", "tiger", "timber", "tunnel", "turtle",
+    "velvet", "violin", "walnut", "whistle", "window", "winter", "wizard", "zebra",
+)

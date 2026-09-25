@@ -2,7 +2,10 @@ package com.hereliesaz.capturetheflag.platform
 
 import android.annotation.SuppressLint
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.IntentFilter
+import android.location.LocationManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
@@ -19,7 +22,9 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Foreground service that keeps fused location flowing while a game is live, including with
- * the screen off. Fixes land in [Tracking.location]; the game layer reports them to the server.
+ * the screen off. Fused location already uses every source the phone has: GPS, Wi-Fi, cell
+ * towers, Bluetooth and motion sensors. Fixes land in [Tracking.location]; the game layer
+ * reports them to the server.
  */
 class TrackingService : Service() {
     private val client by lazy { LocationServices.getFusedLocationProviderClient(this) }
@@ -57,6 +62,26 @@ class TrackingService : Service() {
 object Tracking {
     private val _location = MutableStateFlow<LocationFix?>(null)
     val location: StateFlow<LocationFix?> = _location
+
+    private val _enabled = MutableStateFlow(true)
+    private var watching = false
+
+    /**
+     * Whether location is switched on, updated the moment the player flips it. Switching it off
+     * turns off every source at once for apps, so the game hears about it right away instead of
+     * waiting for fixes to stop.
+     */
+    fun watchEnabled(c: Context): StateFlow<Boolean> {
+        val lm = c.getSystemService(LocationManager::class.java)
+        _enabled.value = lm.isLocationEnabled
+        if (!watching) {
+            watching = true
+            c.applicationContext.registerReceiver(object : BroadcastReceiver() {
+                override fun onReceive(ctx: Context, i: Intent) { _enabled.value = lm.isLocationEnabled }
+            }, IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION))
+        }
+        return _enabled
+    }
 
     fun publish(lat: Double, lng: Double, at: Long, accuracyM: Double) {
         _location.value = LocationFix(GeoPoint(lat, lng), at, accuracyM)

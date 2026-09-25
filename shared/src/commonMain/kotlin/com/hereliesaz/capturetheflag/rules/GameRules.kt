@@ -8,7 +8,7 @@ object GameRules {
 
     const val SIGNUP_WINDOW = DAY
     const val FLAG_PLACEMENT_WINDOW = HOUR
-    const val PLAY_WINDOW = 7 * DAY
+    const val PLAY_WINDOW = 4 * DAY
 
     const val MIN_PLAYERS_PER_TEAM = 1
     const val MAX_CO_CAPTAINS = 2
@@ -37,6 +37,14 @@ object GameRules {
     const val BLE_WINDOW = MINUTE
     /** Fixes worse than this are rejected for verification. */
     const val MAX_FIX_ACCURACY_M = 50.0
+    /**
+     * Last seen on enemy ground, next seen at home, with a gap this long between: they went
+     * dark to sneak back, and are jailed where they were last seen. Phones report every 15 s
+     * while tracking; an ordinary signal gap is far shorter than any real crossing.
+     */
+    const val DARK_GAP = 2 * MINUTE
+    /** No fix this long on enemy ground (or location switched off) and the screen says so: well inside a minute. */
+    const val LOCATION_LOST_WARNING = 30_000L
     /** Sensor pose must be sampled this close to the photo's EXIF time. */
     const val POSE_MAX_SKEW = 3_000L
     /** The camera must point within this many degrees of the horizon: held like a camera, not flat or at the sky. */
@@ -70,6 +78,28 @@ object GameRules {
     const val JAIL_TRAVEL_BUFFER = 10 * MINUTE
     /** A rescuer must hold the enemy jail this long, unbroken, to free their team. */
     const val JAILBREAK_HOLD = 15 * MINUTE
+
+    /** A jailbreak stream must start at least this far from the jail, so the walk-in is on camera. */
+    const val STREAM_APPROACH_M = 50.0
+    /** The challenge is said with the winning frame; the referees' footage runs this long past it, then ends. */
+    const val STREAM_CHALLENGE_WINDOW = 30_000L
+    /**
+     * Within this of the enemy flag, the app asks the player to go live. Roughly a cell tower's
+     * reach, as a starting point: wide enough to keep them hunting, and whoever hears it is
+     * already cut off from their team (see ChatAccess.blackedOut), so it can only get out on a
+     * live stream everybody hears, or by making it home.
+     */
+    const val FLAG_ZONE_M = 1_000.0
+    /** A capture counts only from a stream live since the player came within [FLAG_ZONE_M], or started within this of it. */
+    const val STREAM_ZONE_GRACE = MINUTE
+    /** Frames further apart than this drop the stream. */
+    const val STREAM_MAX_GAP = 20_000L
+    /** How long defenders have to dispute a finished stream. */
+    const val STREAM_CONTEST_WINDOW = 10 * MINUTE
+    /** A review the referees can't settle in this long is dropped, and the stream counts. */
+    const val STREAM_RULING_WINDOW = 30 * MINUTE
+    /** After a ruling, how long either team's leaders have to appeal it (once per team per round). */
+    const val STREAM_APPEAL_WINDOW = 10 * MINUTE
 
     /** Rotation period for BLE advertisement tokens. */
     const val BLE_TOKEN_ROTATION = 15 * MINUTE
