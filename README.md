@@ -23,6 +23,14 @@ Every photo is also checked for freshness (2 min), and its EXIF location against
 
 A rules panel sits above every tab and shows only what applies to the player right now (`rules/Briefing.kt`): sign-up, leader or follower during placement, home ground, enemy ground (with the next ping and when identity is revealed), breaking out, en route to jail, frozen, disqualified, or spectating. Everything else stays hidden.
 
+## Map
+
+The Map tab (`ui/MapTab.kt`) draws the city as you're allowed to see it: both halves with yours shaded, the line, you and your fix accuracy, your own flag and jail, the enemy jail (public anyway), pings sent to you in the last 30 minutes with their blur circles, and your Flag Sense circle. Never teammates' positions, never the enemy flag.
+
+## Alerts
+
+Things that must reach you even with the app closed buzz as urgent notifications (`ui/Alerts.kt`, separate from the quiet radio): an intruder ping sent to you, a tripwire, an interrogation result, being jailed (with where and how long), ten minutes left to report, being freed or disqualified, an enemy holding your jail, and the round starting or ending. Live trail updates never buzz.
+
 ## Radio
 
 A live play-by-play in a radio sportscaster's voice (`commentary/Commentator.kt`), in the Radio tab, as a one-line ticker above every tab, and as an ongoing notification (shared with the location service's, so there is only ever one).
@@ -160,7 +168,6 @@ Each phone advertises a server-issued token that rotates every 15 minutes over B
 - **Weather.** `NoWeather` is a stand-in until a weather source is chosen.
 - **Flag forfeit detection.** How a moved flag is detected (periodic re-photo, challenge by opponents, moderation) is not yet specified. `GameEngine.forfeit` is the hook.
 - **Camera EXIF.** Many stock cameras strip GPS unless location tagging is turned on. An in-app CameraX capture would remove that dependency.
-- **Background location** permission needs its own settings-screen request on Android 11+.
 
 ## Stack
 

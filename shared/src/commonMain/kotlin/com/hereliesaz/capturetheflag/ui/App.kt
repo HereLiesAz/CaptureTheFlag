@@ -118,7 +118,7 @@ private fun CityScreen(backend: GameBackend, onPicked: (String) -> Unit) {
     }
 }
 
-private enum class Tab(val label: String) { STATUS("Status"), ROSTER("Roster"), ACT("Act"), RADIO("Radio"), RANKS("Ranks"), CHAT("Chat") }
+private enum class Tab(val label: String) { STATUS("Status"), MAP("Map"), ROSTER("Roster"), ACT("Act"), RADIO("Radio"), RANKS("Ranks"), CHAT("Chat") }
 
 @Composable
 private fun GameScreen(
@@ -139,7 +139,12 @@ private fun GameScreen(
     val radio by backend.commentary(city).collectAsState()
     LaunchedEffect(radio.lastOrNull()) { platform.showLiveFeed(radio.takeLast(5).reversed().map { it.text }) }
     DisposableEffect(city) { onDispose { platform.showLiveFeed(emptyList()) } }
-    LaunchedEffect(city) { backend.pings(city).collect { pings.add(0, it) } }
+    LaunchedEffect(city) {
+        backend.pings(city).collect { p ->
+            pings.add(0, p)
+            Alerts.forPing(p, backend.me.value?.id)?.let { (t, b) -> platform.alert(t, b) }
+        }
+    }
 
     val g = game ?: return Text("Loading…", Modifier.padding(24.dp))
     val mine = me?.let { g.players[it.id] }
@@ -156,6 +161,20 @@ private fun GameScreen(
             platform.stopTracking(); platform.stopProximity()
         }
     }
+    // Ten minutes left to report: one warning, timed from the deadline itself.
+    LaunchedEffect(mine?.jailDeadline, mine?.reportedAt) {
+        val d = mine?.jailDeadline ?: return@LaunchedEffect
+        if (mine.reportedAt != null) return@LaunchedEffect
+        val wait = d - Alerts.DEADLINE_WARNING - clock()
+        if (wait > 0) delay(wait)
+        if (d - clock() > 0) platform.alert("Ten minutes", "Get to the jail and stay put, or you're out for the round.")
+    }
+    // State-change alerts: you jailed or freed, your jail under attack, the round starting or ending.
+    var seen by remember { mutableStateOf<Game?>(null) }
+    LaunchedEffect(g) {
+        seen?.let { before -> Alerts.forChange(before, g, me?.id, now).forEach { (t, b) -> platform.alert(t, b) } }
+        seen = g
+    }
     LaunchedEffect(fix) { fix?.let { if (mine != null) backend.reportLocation(city, it) } }
 
     Column(Modifier.fillMaxSize()) {
@@ -167,6 +186,7 @@ private fun GameScreen(
                 Tab.ROSTER -> RosterTab(platform, g, mine)
                 Tab.ACT -> ActTab(backend, platform, g, mine, city, pings, now)
                 Tab.RADIO -> RadioTab(radio)
+                Tab.MAP -> MapTab(g, mine, fix, pings, now)
                 Tab.RANKS -> RanksTab(backend, g)
                 Tab.CHAT -> ChatTab(backend, g, mine, city)
             }

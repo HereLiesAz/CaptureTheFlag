@@ -1,6 +1,8 @@
 package com.hereliesaz.capturetheflag.platform
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.ComponentActivity
@@ -15,6 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import com.google.android.gms.location.LocationServices
@@ -77,7 +80,20 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
 
     override fun startProximity(token: String) = proximity.start(token)
     override fun stopProximity() = proximity.stop()
-    override fun startTracking(cityName: String) { TrackingService.start(activity) }
+    /**
+     * Android 11+ grants "all the time" location only as a separate request, after foreground
+     * location. Without it pings and jail check-ins stop the moment the screen goes dark.
+     */
+    private val background = activity.registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
+    override fun startTracking(cityName: String) {
+        val fine = ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val always = ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (fine && !always) runCatching { background.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION) }
+        TrackingService.start(activity)
+    }
+
+    override fun alert(title: String, body: String) = AlertNotification.post(activity, title, body)
     override fun stopTracking() { TrackingService.stop(activity) }
     override fun showLiveFeed(lines: List<String>) = RadioNotification.post(activity, lines)
 
