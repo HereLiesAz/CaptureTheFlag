@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag.rules
 
+import kotlinx.serialization.Serializable
 import com.hereliesaz.capturetheflag.geo.DividingLine
 import com.hereliesaz.capturetheflag.geo.GeoPoint
 import kotlin.math.abs
@@ -12,6 +13,7 @@ import kotlin.random.Random
  * @property barrier 0..1, how strongly this cell reads as a natural divide
  *   (river, rail corridor, highway, park edge). Cuts that follow barriers read as fair on the ground.
  */
+@Serializable
 data class CityCell(
     val center: GeoPoint,
     val population: Double,

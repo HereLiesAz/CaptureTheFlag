@@ -1,4 +1,4 @@
-package com.hereliesaz.capturetheflag.node
+package com.hereliesaz.capturetheflag.net
 
 import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.model.BleSighting
@@ -27,6 +27,14 @@ object Kinds {
     const val REVEAL = 34004
     const val RULING = 34005
     const val REPORT = 34006
+    const val VIEW = 34007
+    const val PUBLIC_VIEW = 34008
+    /** City chat: a plain public note, tagged `c`. */
+    const val NOTE = 1
+    /** Team room or DM: one copy per teammate, NIP-44 to each (tagged `p`). */
+    const val TEAM_CHAT = 36001
+    /** A player's profile: display name and selfie. */
+    const val PROFILE = 0
     const val RADIO = 35000
 }
 
@@ -107,9 +115,24 @@ data class Outcome(
     @Serializable data class AwardDto(val user: String, val points: Long, val reason: String)
 }
 
-/** Content of a kind-34002 ping, NIP-44 encrypted to its one recipient (tagged `p`). */
-@Serializable
-data class PingDto(val number: Int, val lat: Double, val lng: Double, val radius: Double, val kind: String)
+/**
+ * Content of a kind-34002 ping: a [com.hereliesaz.capturetheflag.model.Ping] as JSON, NIP-44 to
+ * its one recipient (tagged `p`), cut down to what that recipient may know. Until the intruder
+ * is identified, [com.hereliesaz.capturetheflag.model.Ping.subject] is an opaque per-game
+ * handle, not their key: enough to interrogate them, not enough to know who they are.
+ */
+object Pings {
+    fun encode(p: com.hereliesaz.capturetheflag.model.Ping) = Nostr.json.encodeToString(com.hereliesaz.capturetheflag.model.Ping.serializer(), p)
+    fun decode(s: String) = Nostr.json.decodeFromString(com.hereliesaz.capturetheflag.model.Ping.serializer(), s)
+}
+
+object Ble {
+    /** The token a player with key [k] advertises during rotation [window]: `HMAC(k, window)`, 8 bytes. */
+    fun token(k: ByteArray, window: Long): String {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256").apply { init(javax.crypto.spec.SecretKeySpec(k, "HmacSHA256")) }
+        return mac.doFinal(java.nio.ByteBuffer.allocate(8).putLong(window).array()).copyOf(8).toHex()
+    }
+}
 
 /**
  * A secret the referee holds during a round. [preimage] is canonical text (`lat,lng,photoHash`
@@ -171,4 +194,16 @@ object Reviews {
             val findings = reports.mapNotNull { r -> r.checks.firstOrNull { it.name == name }?.let { r.referee to it } }.toMap()
             if (findings.values.map { it.result }.distinct().size > 1 || findings.size < reports.size) Discrepancy(name, findings) else null
         }
+}
+
+/**
+ * Game views: [com.hereliesaz.capturetheflag.rules.GameView] as JSON. Kind 34007 is one
+ * player's view, NIP-44 to them (tagged `p`); kind 34008 is the onlookers' view, in the clear
+ * (tagged `c` with the city). Both are sent by the batch's proposer after every batch, tagged
+ * `s` with the batch sequence: the newest view is the one with the highest.
+ */
+object Views {
+    val json = kotlinx.serialization.json.Json(Nostr.json) { allowStructuredMapKeys = true }
+    fun encode(g: com.hereliesaz.capturetheflag.model.Game) = json.encodeToString(com.hereliesaz.capturetheflag.model.Game.serializer(), g)
+    fun decode(s: String) = json.decodeFromString(com.hereliesaz.capturetheflag.model.Game.serializer(), s)
 }

@@ -299,6 +299,8 @@ private fun StatusTab(
                     PingKind.TRIPWIRE -> "TRIPWIRE"
                     PingKind.INTERROGATION -> "interrogated"
                     PingKind.GO_LIVE -> "go live"
+                    PingKind.CLOSER -> "closer: ${p.radiusM.toInt()} m"
+                    PingKind.FLAG_THREAT -> "FLAG: ${p.radiusM.toInt()} m"
                 }
                 val who = p.identified?.displayName ?: "unknown intruder"
                 val lvl = if (myPerks?.keenEye == true && p.subjectLevel != null) " · lv ${p.subjectLevel}" else ""
@@ -412,7 +414,8 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 }) { Text("Vanish: skip next ping ($vanishesLeft left)") }
                 val interrogationsLeft = perks.interrogationsPerGame - (g.interrogationsUsed[mine.id] ?: 0)
                 if (interrogationsLeft > 0) {
-                    pings.filter { it.kind == PingKind.INCURSION && it.subject in g.incursions }
+                    // Intruders you've been pinged about lately. If they've gone home, the interrogation says so.
+                    pings.filter { it.kind == PingKind.INCURSION && now - it.at < 30 * GameRules.MINUTE }
                         .distinctBy { it.subject }.forEach { p ->
                             OutlinedButton(onClick = { scope.launch { report(backend.interrogate(city, p.subject)) } }) {
                                 Text("Interrogate ${p.identified?.displayName ?: "intruder #${p.number}"} ($interrogationsLeft left)")

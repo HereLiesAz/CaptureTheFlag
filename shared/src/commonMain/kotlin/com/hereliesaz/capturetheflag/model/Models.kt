@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag.model
 
+import kotlinx.serialization.Serializable
 import com.hereliesaz.capturetheflag.geo.DividingLine
 import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.geo.Polygon
@@ -24,6 +25,7 @@ enum class Team {
 }
 
 /** A metro area as requested by the initiator. */
+@Serializable
 data class City(
     val id: CityId,
     val name: String,
@@ -33,6 +35,7 @@ data class City(
 )
 
 /** The city split in two. Everything inside [City.boundary] belongs to exactly one team. */
+@Serializable
 data class Territory(
     val city: City,
     val line: DividingLine,
@@ -56,10 +59,12 @@ data class Territory(
 }
 
 /** An app-registered user. Onlookers are users who never join a game. */
+@Serializable
 data class User(val id: PlayerId, val displayName: String, val selfieUrl: String?)
 
 enum class Role { PLAYER, CAPTAIN, CO_CAPTAIN }
 
+@Serializable
 data class Player(
     val user: User,
     val team: Team,
@@ -86,6 +91,7 @@ data class Player(
 }
 
 /** Position report from a device. [accuracyM] is the reported horizontal accuracy. */
+@Serializable
 data class LocationFix(val point: GeoPoint, val at: Millis, val accuracyM: Double)
 
 /**
@@ -93,6 +99,7 @@ data class LocationFix(val point: GeoPoint, val at: Millis, val accuracyM: Doubl
  * [exifLocation]/[exifTakenAt] come from the image; [deviceFix] is the live fused fix
  * sampled by the app at shutter time; [bleSightings] are rotating BLE tokens heard around then.
  */
+@Serializable
 data class PhotoEvidence(
     val imageUri: String,
     val exifLocation: GeoPoint?,
@@ -110,14 +117,17 @@ data class PhotoEvidence(
  * [azimuthDeg] is where the back camera points, degrees from true north. [pitchDeg] is the
  * camera axis above (+) or below (−) the horizon. [rollDeg] is rotation about that axis.
  */
+@Serializable
 data class DevicePose(val azimuthDeg: Double, val pitchDeg: Double, val rollDeg: Double, val at: Millis)
 
 /** A rotating token heard over BLE. Tokens map to players server-side only. */
+@Serializable
 data class BleSighting(val token: String, val at: Millis, val rssi: Int)
 
 enum class FlagVenueKind { PUBLIC_SPACE, PUBLIC_BUILDING, BUSINESS }
 
 /** Where a team's prisoners must report. Public to both teams. */
+@Serializable
 data class Jail(
     val team: Team,
     val venueName: String,
@@ -128,6 +138,7 @@ data class Jail(
     val placedAt: Millis,
 )
 
+@Serializable
 data class Flag(
     val team: Team,
     val venueName: String,
@@ -139,25 +150,36 @@ data class Flag(
     val placedAt: Millis,
 )
 
+@Serializable
 sealed interface GamePhase {
     /** Accepting sign-ups until [deadline]. */
+    @Serializable
     data class Signup(val deadline: Millis) : GamePhase
     /** Leaders choose and register a flag until [deadline]. */
+    @Serializable
     data class FlagPlacement(val deadline: Millis) : GamePhase
     /** Live play until [deadline], after which a tie is called. */
+    @Serializable
     data class Active(val deadline: Millis) : GamePhase
+    @Serializable
     data class Ended(val outcome: Outcome, val at: Millis) : GamePhase
 }
 
+@Serializable
 sealed interface Outcome {
+    @Serializable
     data class FlagCaptured(val winner: Team, val by: PlayerId) : Outcome
+    @Serializable
     data class Forfeit(val loser: Team, val reason: String) : Outcome
+    @Serializable
     data object Tie : Outcome
     /** Not enough players signed up to field two teams. */
+    @Serializable
     data object Cancelled : Outcome
 }
 
 /** An enemy-territory incursion in progress. */
+@Serializable
 data class Incursion(
     val playerId: PlayerId,
     val enteredAt: Millis,
@@ -180,6 +202,10 @@ enum class PingKind {
      * position, never the flag's.
      */
     GO_LIVE,
+    /** To the hunter alone: a tighter ring around the enemy flag. [Ping.radiusM] is the ring. */
+    CLOSER,
+    /** To the defenders: a named hunter is within [Ping.radiusM] of your flag. [Ping.location] is the flag. */
+    FLAG_THREAT,
 }
 
 /**
@@ -189,6 +215,7 @@ enum class PingKind {
  * strip [subjectLevel] for recipients without Keen Eye and [decoyRevealedTo] down to the
  * receiving player before delivery; [subject] never leaves the server for decoys.
  */
+@Serializable
 data class Ping(
     val subject: PlayerId,
     val number: Int,
@@ -205,8 +232,10 @@ data class Ping(
 )
 
 /** A Doppelgänger decoy still walking: one more ping per waypoint. */
+@Serializable
 data class DecoyWalk(val sender: PlayerId, val waypoints: List<GeoPoint>, val nextAt: Millis)
 
+@Serializable
 data class Game(
     val id: GameId,
     val city: City,
@@ -242,6 +271,8 @@ data class Game(
     val streams: Map<String, LiveStream> = emptyMap(),
     /** Player → when they came within [com.hereliesaz.capturetheflag.rules.GameRules.FLAG_ZONE_M] of the enemy flag, this approach. */
     val flagZone: Map<PlayerId, Millis> = emptyMap(),
+    /** Player → the tightest ring around the enemy flag they've crossed this approach (index into GameRules.FLAG_RINGS_M). */
+    val flagRing: Map<PlayerId, Int> = emptyMap(),
     /** Players who switched location off on enemy ground: their next fix at home jails them. */
     val dark: Set<PlayerId> = emptySet(),
     /** Teams that have used their one appeal this round. */
@@ -260,6 +291,7 @@ enum class StreamPurpose { CAPTURE, JAILBREAK }
  * frame ([qualifiedAt]); the referees' footage ends 30 s later ([endedAt]), and the stream may
  * go on as a victory lap. Defenders then have until [contestUntil] to dispute; undisputed, it counts.
  */
+@Serializable
 data class LiveStream(
     val id: String,
     val by: PlayerId,
@@ -304,9 +336,11 @@ data class LiveStream(
  * A defender's objection to a stream. Settled by the referees' automated checks, never by a
  * person. Each team's leaders see every referee's report first and may appeal once per round.
  */
+@Serializable
 data class Dispute(val by: PlayerId, val at: Millis, val reason: String)
 
 /** Points granted to one user by one verified event. Summed into global and per-city standings. */
+@Serializable
 data class Award(
     val user: PlayerId,
     val city: CityId,
@@ -355,6 +389,7 @@ enum class HighlightKind {
  * booth can bring it up in later rounds. [secret] moments must not be aired while their round
  * is still being played.
  */
+@Serializable
 data class Highlight(
     val kind: HighlightKind,
     val user: PlayerId,
@@ -369,6 +404,7 @@ data class Highlight(
 }
 
 /** One player's round, counted as it happens. */
+@Serializable
 data class RoundStats(
     val tags: Int = 0,
     val timesJailed: Int = 0,

@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag.node
 
+import com.hereliesaz.capturetheflag.net.*
 import com.hereliesaz.capturetheflag.data.DemoCityDirectory
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.Team
@@ -17,6 +18,8 @@ import io.ktor.server.websocket.WebSockets
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
+import com.hereliesaz.capturetheflag.rules.Verdict
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -272,6 +275,16 @@ class NodeTest {
         }
         assertIs<GamePhase.Active>(g().phase)
 
+        // Each player's view: their own flag, never the enemy's; onlookers see neither.
+        val someone = g().players.values.first()
+        val sealed = net.store.query(listOf(Filter(kinds = setOf(Kinds.VIEW), tags = mapOf("p" to setOf(someone.id))))).last()
+        val view = Views.decode(Nip44.open(sealed.content, keyOf.getValue(someone.id), sealed.pubkey))
+        assertEquals(setOf(someone.team), view.flags.keys)
+        assertEquals(setOf(someone.id), view.lastFix.keys + someone.id)
+        val public = Views.decode(net.store.query(listOf(Filter(kinds = setOf(Kinds.PUBLIC_VIEW)))).last().content)
+        assertTrue(public.flags.isEmpty() && public.lastFix.isEmpty())
+        assertEquals(2, public.jails.size, "jails are public")
+
         // A flag run: live 60 m out, walk in, the winning frame with the challenge, frames until the footage closes.
         val runner = g().players.values.first { !it.isLeader }
         val target = g().flags.getValue(runner.team.opponent).location
@@ -329,6 +342,49 @@ class NodeTest {
         val d = Reviews.discrepancies(listOf(r("a", ReviewReport.Result.PASS), r("b", ReviewReport.Result.FAIL), r("c", ReviewReport.Result.NOT_RUN)))
         assertEquals(listOf("Matches the registration photo"), d.map { it.check })
         assertEquals("detail from b", d.single().findings.getValue("b").detail)
+    }
+
+    @Test fun phonesPlayThroughANode() = testApplication {
+        val store = EventStore()
+        val node = Keys.generate()
+        var now = System.currentTimeMillis()
+        val referee = Referee(node, store, DemoCityDirectory) { now }
+        install(WebSockets)
+        routing { relay(store) }
+        startApplication()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob())
+        scope.launch { store.live.collect { referee.accept(it) } }
+        scope.launch { while (true) { kotlinx.coroutines.delay(50); referee.flush() } }
+        val http = createClient { install(ClientWebSockets) }
+        fun phone() = NodeBackend(Keys.generate(), RelayClient("/", http, scope).also { it.start() }, scope, clock = { now }, answerWithinMs = 10_000)
+        suspend fun eventually(what: String, check: () -> Boolean) {
+            kotlinx.coroutines.withTimeoutOrNull(10_000) { while (!check()) kotlinx.coroutines.delay(50) } ?: error("never: $what")
+        }
+        try {
+            val (ana, bo) = phone() to phone()
+            ana.register("Ana", "selfie-a"); bo.register("Bo", "selfie-b")
+            assertIs<GamePhase.Signup>(ana.requestCity("New Orleans").phase, "the referee opens a round on request")
+            bo.requestCity("New Orleans")
+            assertEquals(Verdict.Valid, ana.join("New Orleans"), "the verdict comes back from the referee")
+            assertEquals(Verdict.Valid, bo.join("New Orleans"))
+            eventually("both signed up") { ana.game("New Orleans").value?.signups?.size == 2 }
+
+            // The round opened a moment after `now` was read: go a minute past its deadline.
+            now += GameRules.SIGNUP_WINDOW + GameRules.MINUTE
+            eventually("teams dealt") { ana.game("New Orleans").value?.phase is GamePhase.FlagPlacement }
+            val seen = ana.game("New Orleans").value!!
+            assertEquals(setOf(ana.me.value!!.id), seen.lastFix.keys + ana.me.value!!.id)
+            assertEquals(2, seen.players.size)
+
+            // City chat reaches everyone; the other phone sees it by name.
+            assertEquals(Verdict.Valid, ana.send(com.hereliesaz.capturetheflag.chat.Channel.City(seen.city.id), "Laissez les bons temps rouler"))
+            bo.requestCity("New Orleans")
+            eventually("chat arrives") { bo.messages(com.hereliesaz.capturetheflag.chat.Channel.City(seen.city.id)).value.any { it.fromName == "Ana" } }
+            // Referees' awards and radio reach the phone too.
+            eventually("radio") { ana.commentary("New Orleans").value.isNotEmpty() }
+        } finally {
+            scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        }
     }
 
     @Test fun nip44MatchesTheOfficialVectors() {
