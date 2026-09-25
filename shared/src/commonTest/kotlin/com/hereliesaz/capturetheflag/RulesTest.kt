@@ -34,6 +34,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RulesTest {
+    /** A jail 2 km further from the line than [home], so it stays in the same territory. */
+    private fun jailFor(home: GeoPoint) = GeoPoint(home.lat + if (home.lat > 30.0) 0.02 else -0.02, home.lng)
+
     // A square city split north/south along latitude 30.0: bearing 90° runs east.
     private val city = City("nola", "New Orleans", Polygon(listOf(
         GeoPoint(29.9, -90.2), GeoPoint(29.9, -90.0), GeoPoint(30.1, -90.0), GeoPoint(30.1, -90.2),
@@ -101,6 +104,10 @@ class RulesTest {
             val tr = engine.placeFlag(g, cap.id, "Venue", FlagVenueKind.PUBLIC_SPACE, "1 St", home, photo(home, DAY + 1), DAY + 1)
             assertEquals(Verdict.Valid, tr.verdict)
             g = tr.game
+            val j = jailFor(home)
+            val jt = engine.placeJail(g, cap.id, "Jail", "2 St", j, photo(j, DAY + 1), DAY + 1)
+            assertEquals(Verdict.Valid, jt.verdict)
+            g = jt.game
         }
         assertIs<GamePhase.Active>(g.phase)
         return g
@@ -129,8 +136,9 @@ class RulesTest {
         val cap = g.players.values.first { it.role == Role.CAPTAIN }
         val home = if (owner(north) == cap.team) north else south
         g = engine.placeFlag(g, cap.id, "V", FlagVenueKind.BUSINESS, "a", home, photo(home, DAY), DAY).game
+        g = engine.placeJail(g, cap.id, "J", "b", jailFor(home), photo(jailFor(home), DAY), DAY).game
         val out = (engine.tick(g, DAY + HOUR).game.phase as GamePhase.Ended).outcome
-        assertEquals(Outcome.Forfeit(cap.team.opponent, "No flag placed in time"), out)
+        assertEquals(Outcome.Forfeit(cap.team.opponent, "No flag and jail placed in time"), out)
     }
 
     @Test fun incursionPingsEscalateAndIdentify() {

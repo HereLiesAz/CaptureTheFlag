@@ -65,6 +65,14 @@ data class Player(
     val team: Team,
     val role: Role = Role.PLAYER,
     val jailedAt: Millis? = null,
+    /** Must finish reporting to the enemy jail by this time, or be disqualified. */
+    val jailDeadline: Millis? = null,
+    /** Continuous presence at the jail began here; reset on leaving. */
+    val reportingSince: Millis? = null,
+    /** Report completed. Only reported prisoners can be paroled; all can be broken out. */
+    val reportedAt: Millis? = null,
+    /** Failed to report: out for the round, no points from it. Stays jailed. */
+    val disqualified: Boolean = false,
     /** Level snapshotted when teams are dealt; fixed for the round. */
     val level: Int = 1,
 ) {
@@ -93,6 +101,17 @@ data class PhotoEvidence(
 data class BleSighting(val token: String, val at: Millis, val rssi: Int)
 
 enum class FlagVenueKind { PUBLIC_SPACE, PUBLIC_BUILDING, BUSINESS }
+
+/** Where a team's prisoners must report. Public to both teams. */
+data class Jail(
+    val team: Team,
+    val venueName: String,
+    val address: String,
+    val location: GeoPoint,
+    val photo: PhotoEvidence,
+    val placedBy: PlayerId,
+    val placedAt: Millis,
+)
 
 data class Flag(
     val team: Team,
@@ -176,6 +195,9 @@ data class Game(
     /** Sign-ups before team assignment. */
     val signups: List<User> = emptyList(),
     val flags: Map<Team, Flag> = emptyMap(),
+    val jails: Map<Team, Jail> = emptyMap(),
+    /** Net points each player has earned this round. Zeroed on disqualification. */
+    val earned: Map<PlayerId, Long> = emptyMap(),
     val lastFix: Map<PlayerId, LocationFix> = emptyMap(),
     val incursions: Map<PlayerId, Incursion> = emptyMap(),
     /** (tagger, target) pairs already scored this round. Re-jailing the same player pays nothing. */

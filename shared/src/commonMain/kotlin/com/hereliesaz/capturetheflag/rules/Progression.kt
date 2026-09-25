@@ -90,6 +90,8 @@ object Points {
     const val FLAG_HELD = 15
     /** Per ping endured, paid on getting home without being jailed. */
     const val PER_PING_SURVIVED = 2
+    /** Per teammate freed in a jailbreak. */
+    const val JAILBREAK_PER_FREED = 20
 }
 
 /** Power at which each perk switches on. */

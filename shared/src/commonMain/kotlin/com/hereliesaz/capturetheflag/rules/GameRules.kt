@@ -37,6 +37,20 @@ object GameRules {
     const val BLE_WINDOW = MINUTE
     /** Fixes worse than this are rejected for verification. */
     const val MAX_FIX_ACCURACY_M = 50.0
+    /** A jail must sit at least this far from its own team's flag. */
+    const val JAIL_MIN_FROM_FLAG_M = 400.0
+    /** Jail photo vs. registered jail location, for registration and for jailbreak. */
+    const val JAIL_TOLERANCE_M = 40.0
+    /** A prisoner counts as at the jail within this radius. */
+    const val JAIL_REPORT_RADIUS_M = 40.0
+    /** Continuous time at the jail to complete a report. */
+    const val JAIL_REPORT_HOLD = 5 * MINUTE
+    /** Floor on the report window, however close the prisoner is. */
+    const val JAIL_REPORT_MIN_WINDOW = 15 * MINUTE
+    /** Slack on the travel estimate, then a flat buffer on top. */
+    const val JAIL_TRAVEL_SLACK = 1.25
+    const val JAIL_TRAVEL_BUFFER = 10 * MINUTE
+
     /** Rotation period for BLE advertisement tokens. */
     const val BLE_TOKEN_ROTATION = 15 * MINUTE
 }

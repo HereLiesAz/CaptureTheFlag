@@ -154,7 +154,7 @@ private fun GameScreen(
             when (tab) {
                 Tab.STATUS -> StatusTab(backend, g, mine, now, fix?.let { g.territory.ownerOf(it.point) }, pings, city, onLeave)
                 Tab.ROSTER -> RosterTab(platform, g, mine)
-                Tab.ACT -> ActTab(backend, platform, g, mine, city, pings)
+                Tab.ACT -> ActTab(backend, platform, g, mine, city, pings, now)
                 Tab.RANKS -> RanksTab(backend, g)
                 Tab.CHAT -> ChatTab(backend, g, mine, city)
             }
@@ -198,7 +198,7 @@ private fun StatusTab(
             )
         }
         mine?.let {
-            item { Text("You: ${it.team} · ${it.role}" + if (it.isJailed) " · JAILED" else "") }
+            item { Text("You: ${it.team} · ${it.role}" + when { it.disqualified -> " · DISQUALIFIED"; it.isJailed -> " · JAILED"; else -> "" }) }
             item { Text(if (standingIn == null) "Outside the city" else if (standingIn == it.team) "Home ground" else "ENEMY GROUND. They know.") }
         }
         if (g.phase is GamePhase.Signup && g.signups.none { it.id == backend.me.value?.id }) {
@@ -248,7 +248,7 @@ private fun RosterTab(platform: PlatformServices, g: Game, mine: Player?) {
 }
 
 @Composable
-private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mine: Player?, city: String, pings: List<Ping>) {
+private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mine: Player?, city: String, pings: List<Ping>, now: Millis) {
     val scope = rememberCoroutineScope()
     var result by remember { mutableStateOf<String?>(null) }
     fun report(v: Verdict) { result = when (v) { Verdict.Valid -> "Confirmed."; is Verdict.Rejected -> v.reason } }
@@ -268,8 +268,21 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                         report(backend.placeFlag(city, venue, kind, address, at, photo))
                     }
                 } else Text(g.flags[mine.team]?.let { "Flag placed at ${it.venueName}." } ?: "Waiting on your leaders.")
+                if (mine.isLeader && mine.team in g.flags && mine.team !in g.jails) JailForm { venue, address ->
+                    scope.launch {
+                        val photo = platform.takePhoto() ?: return@launch
+                        val at = photo.exifLocation ?: photo.deviceFix?.point
+                            ?: return@launch report(Verdict.Rejected("No location on photo"))
+                        report(backend.placeJail(city, venue, address, at, photo))
+                    }
+                } else g.jails[mine.team]?.let { Text("Jail placed at ${it.venueName}.") }
             }
-            is GamePhase.Active -> {
+            is GamePhase.Active -> if (mine.isJailed) JailPanel(g, mine, now) else {
+                g.jails[mine.team.opponent]?.let { Text("Enemy jail: ${it.venueName}, ${it.address}") }
+                val held = g.team(mine.team).count { it.isJailed && !it.disqualified }
+                if (held > 0) Button(onClick = {
+                    scope.launch { platform.takePhoto()?.let { report(backend.jailbreak(city, it)) } }
+                }) { Text("Photograph enemy jail: free $held") }
                 val decoysLeft = Progression.perksFor(mine.level).decoysPerGame - (g.decoysUsed[mine.id] ?: 0)
                 if (decoysLeft > 0) OutlinedButton(enabled = !mine.isJailed, onClick = {
                     scope.launch {
@@ -341,6 +354,33 @@ private fun CoCaptainPicker(g: Game, captain: Player, onSave: (Set<String>) -> U
         }
     }
     OutlinedButton(onClick = { onSave(picks.toSet()) }) { Text("Appoint") }
+}
+
+/** A prisoner's whole world: where to go, how long is left, how long they've stood there. */
+@Composable
+private fun JailPanel(g: Game, me: Player, now: Millis) {
+    val jail = g.jails[me.team.opponent]
+    when {
+        me.disqualified -> Text("Disqualified. You never reported. Nothing you do this round counts.")
+        me.reportedAt != null -> Text("In jail. Frozen until a teammate breaks you out or the round ends.")
+        else -> {
+            Text("JAILED. Report to ${jail?.venueName ?: "the enemy jail"}${jail?.let { ", " + it.address } ?: ""}.")
+            me.jailDeadline?.let { Text("Arrive and stay ${GameRules.JAIL_REPORT_HOLD / GameRules.MINUTE} min within ${countdown(it - now)} or be disqualified.") }
+            me.reportingSince?.let { Text("Reporting: ${countdown(now - it)} of ${countdown(GameRules.JAIL_REPORT_HOLD)}") }
+        }
+    }
+}
+
+@Composable
+private fun JailForm(onSubmit: (String, String) -> Unit) {
+    var venue by remember { mutableStateOf("") }
+    var address by remember { mutableStateOf("") }
+    Text("Now the jail. Public, in your territory, at least ${GameRules.JAIL_MIN_FROM_FLAG_M.toInt()} m from the flag. The enemy will know where it is.")
+    OutlinedTextField(venue, { venue = it }, label = { Text("Jail venue") }, singleLine = true)
+    OutlinedTextField(address, { address = it }, label = { Text("Address") }, singleLine = true)
+    Button(enabled = venue.isNotBlank() && address.isNotBlank(), onClick = { onSubmit(venue.trim(), address.trim()) }) {
+        Text("Photograph jail & register")
+    }
 }
 
 @Composable
