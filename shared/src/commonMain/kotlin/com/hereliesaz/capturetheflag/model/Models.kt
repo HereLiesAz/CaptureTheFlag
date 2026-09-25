@@ -202,6 +202,10 @@ enum class PingKind {
      * position, never the flag's.
      */
     GO_LIVE,
+    /** To the hunter alone: a tighter ring around the enemy flag. [Ping.radiusM] is the ring. */
+    CLOSER,
+    /** To the defenders: a named hunter is within [Ping.radiusM] of your flag. [Ping.location] is the flag. */
+    FLAG_THREAT,
 }
 
 /**
@@ -267,6 +271,8 @@ data class Game(
     val streams: Map<String, LiveStream> = emptyMap(),
     /** Player → when they came within [com.hereliesaz.capturetheflag.rules.GameRules.FLAG_ZONE_M] of the enemy flag, this approach. */
     val flagZone: Map<PlayerId, Millis> = emptyMap(),
+    /** Player → the tightest ring around the enemy flag they've crossed this approach (index into GameRules.FLAG_RINGS_M). */
+    val flagRing: Map<PlayerId, Int> = emptyMap(),
     /** Players who switched location off on enemy ground: their next fix at home jails them. */
     val dark: Set<PlayerId> = emptySet(),
     /** Teams that have used their one appeal this round. */

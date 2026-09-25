@@ -215,6 +215,27 @@ class RulesTest {
         assertTrue((refused.verdict as Verdict.Rejected).reason.startsWith("You went live too late"))
     }
 
+    @Test fun eachRingAroundTheFlagIsAnnouncedToEveryoneOnce() {
+        val g = activeGame()
+        val p = g.players.values.first()
+        val flag = g.flags.getValue(p.team.opponent).location
+        val defenders = g.team(p.team.opponent).map { it.id }.toSet()
+        var game = g
+        val heard = mutableListOf<Double>()
+        var t = DAY + 20 * MINUTE
+        // Walk in along a line: 800 m, 600, 400, 150, 40, then back out to 300.
+        for (d in listOf(800.0, 600.0, 400.0, 150.0, 40.0, 300.0)) {
+            t += MINUTE
+            val tr = engine.reportLocation(game, p.id, LocationFix(flag.north(d), t, 5.0))
+            game = tr.game
+            tr.pings.filter { it.kind == PingKind.FLAG_THREAT }.forEach { threat ->
+                assertEquals(defenders, threat.recipients); assertEquals(p.id, threat.identified?.id); heard += threat.radiusM
+            }
+            if (tr.pings.any { it.kind == PingKind.FLAG_THREAT }) assertTrue(tr.notices.any { "within" in it && p.user.displayName in it }, "the city hears it too")
+        }
+        assertEquals(listOf(1000.0, 500.0, 200.0, 50.0), heard, "each ring once, tightest reached; backing off says nothing")
+    }
+
     @Test fun gettingCaughtEndsTheStreamOnTheSpot() {
         val g = activeGame()
         val p = g.players.values.first()

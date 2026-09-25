@@ -90,6 +90,8 @@ object GameRules {
      * live stream everybody hears, or by making it home.
      */
     const val FLAG_ZONE_M = 1_000.0
+    /** The rings around the enemy flag, widest first. Crossing each is announced to everyone. */
+    val FLAG_RINGS_M = listOf(FLAG_ZONE_M, 500.0, 200.0, 50.0)
     /** A capture counts only from a stream live since the player came within [FLAG_ZONE_M], or started within this of it. */
     const val STREAM_ZONE_GRACE = MINUTE
     /** Frames further apart than this drop the stream. */

@@ -44,6 +44,7 @@ object GameView {
                 if (s.purpose == StreamPurpose.CAPTURE && !defender) s.copy(target = s.lastFrame.point) else s
             },
             flagZone = mine(game.flagZone),
+            flagRing = mine(game.flagRing),
             dark = game.dark.filterTo(mutableSetOf()) { it == me?.id },
         )
     }

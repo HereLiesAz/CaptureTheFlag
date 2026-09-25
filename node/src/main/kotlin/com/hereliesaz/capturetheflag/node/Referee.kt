@@ -346,7 +346,7 @@ class Referee(
     private fun pingFor(r: Round, p: Ping, to: PlayerId, g: Game): Ping {
         val keen = g.players[to]?.let { Progression.perksFor(it.level).keenEye } == true
         return p.copy(
-            subject = if (p.identified != null || p.kind == PingKind.GO_LIVE) p.subject else handle(r, p.subject),
+            subject = if (p.identified != null || p.kind == PingKind.GO_LIVE || p.kind == PingKind.CLOSER) p.subject else handle(r, p.subject),
             recipients = setOf(to),
             subjectLevel = p.subjectLevel.takeIf { keen },
             decoyRevealedTo = p.decoyRevealedTo.intersect(setOf(to)),

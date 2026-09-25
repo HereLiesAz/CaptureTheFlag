@@ -24,6 +24,8 @@ object Alerts {
             PingKind.TRACKING -> null // live trail updates would buzz every few seconds
             PingKind.INTERROGATION -> "Interrogation" to "$who, right now$blur."
             PingKind.GO_LIVE -> "Go live" to "You're within ${GameRules.FLAG_ZONE_M.toInt()} m of their flag. Go live now, or a capture won't count."
+            PingKind.CLOSER -> "Closer" to "Within ${p.radiusM.toInt()} m of their flag. Everybody knows it."
+            PingKind.FLAG_THREAT -> "Flag threatened" to "${p.identified?.displayName ?: "A hunter"} is within ${p.radiusM.toInt()} m of your flag."
         }
     }
 

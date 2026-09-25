@@ -275,8 +275,10 @@ class GameEngine(
             }
         }
         g = g.copy(trails = trails)
-        g = nearFlag(g, p, fix)?.let { (zoned, ping) -> ping?.let { pings += it }; zoned } ?: g
-        return (Transition(g, pings = pings, awards = mentored(g, awards), highlights = highlights) + duePings(g, fix.at)).settled()
+        val ringed = nearFlag(g, p, fix)
+        g = ringed?.game ?: g
+        val base = Transition(g, pings = pings, awards = mentored(g, awards), highlights = highlights)
+        return ((ringed?.let { base.copy(pings = base.pings + it.pings, notices = base.notices + it.notices) } ?: base) + duePings(g, fix.at)).settled()
     }
 
     /**
@@ -634,23 +636,36 @@ class GameEngine(
     }
 
     /**
-     * Tracks when [p] came within [GameRules.FLAG_ZONE_M] of the enemy flag, and asks them to go
-     * live on the way in unless they already are. Null when nothing changes.
+     * The rings around the enemy flag ([GameRules.FLAG_RINGS_M], widest first), on enemy
+     * ground only. Crossing into a tighter ring than any yet this approach tells everyone: the
+     * hunter privately, the defenders (with the hunter's name), and the city. The widest ring
+     * also asks the hunter to go live, and starts the clock a capture's stream is judged by.
+     * Leaving the widest ring ends the approach. Null when nothing changes.
      */
-    private fun nearFlag(g: Game, p: Player, fix: LocationFix): Pair<Game, Ping?>? {
-        val flag = g.flags[p.team.opponent]?.location ?: return null
-        // Only on enemy ground, where they're cut off: a zone reaching over the line mustn't tip off anyone who can talk.
-        val near = g.territory.ownerOf(fix.point) == p.team.opponent && fix.point.distanceTo(flag) <= GameRules.FLAG_ZONE_M
-        val since = g.flagZone[p.id]
-        return when {
-            near && since == null -> {
-                val live = g.streams.values.any { it.by == p.id && it.open }
-                g.copy(flagZone = g.flagZone + (p.id to fix.at)) to
-                    if (live) null else Ping(p.id, 0, fix.point, fix.at, null, setOf(p.id), PingKind.GO_LIVE)
-            }
-            !near && since != null -> g.copy(flagZone = g.flagZone - p.id) to null
-            else -> null
+    private fun nearFlag(g: Game, p: Player, fix: LocationFix): Transition? {
+        val flag = g.flags[p.team.opponent] ?: return null
+        val d = fix.point.distanceTo(flag.location)
+        val onTheirSide = g.territory.ownerOf(fix.point) == p.team.opponent
+        val ring = if (onTheirSide) GameRules.FLAG_RINGS_M.indexOfLast { d <= it } else -1
+        val was = g.flagRing[p.id] ?: -1
+        if (ring < 0) return if (was >= 0) Transition(g.copy(flagZone = g.flagZone - p.id, flagRing = g.flagRing - p.id)) else null
+        if (ring <= was) return null
+        val r = GameRules.FLAG_RINGS_M[ring]
+        val m = "${r.toInt()} m"
+        val zoned = g.copy(
+            flagRing = g.flagRing + (p.id to ring),
+            flagZone = if (p.id in g.flagZone) g.flagZone else g.flagZone + (p.id to fix.at),
+        )
+        val live = g.streams.values.any { it.by == p.id && it.open }
+        val pings = buildList {
+            if (was < 0 && !live) add(Ping(p.id, 0, fix.point, fix.at, null, setOf(p.id), PingKind.GO_LIVE, r))
+            else add(Ping(p.id, 0, fix.point, fix.at, null, setOf(p.id), PingKind.CLOSER, r))
+            // The defenders know where their own flag is: the ring says how close, not where the hunter stands.
+            val defenders = g.team(p.team.opponent).map { it.id }.toSet()
+            if (defenders.isNotEmpty()) add(Ping(p.id, 0, flag.location, fix.at, p.user, defenders, PingKind.FLAG_THREAT, r))
         }
+        val side = flag.team.name.lowercase().replaceFirstChar { it.uppercase() }
+        return Transition(zoned, pings = pings, notices = listOf("${p.user.displayName} is within $m of the $side flag."))
     }
 
     /** One frame of a live stream: where the phone is, and the hash of the video since the last frame. */
@@ -673,8 +688,9 @@ class GameEngine(
             }
         }
         g = g.copy(streams = g.streams + (id to next), lastFix = g.lastFix + (by to fix))
-        g = nearFlag(g, p, fix)?.first ?: g
-        return if (next.qualifiedAt != null && now >= next.qualifiedAt + GameRules.STREAM_CHALLENGE_WINDOW) closeFootage(g, next, now)
+        val ringed = nearFlag(g, p, fix) ?: Transition(g)
+        g = ringed.game
+        return ringed + if (next.qualifiedAt != null && now >= next.qualifiedAt + GameRules.STREAM_CHALLENGE_WINDOW) closeFootage(g, next, now)
         else Transition(g)
     }
 

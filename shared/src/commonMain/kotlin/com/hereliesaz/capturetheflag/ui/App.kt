@@ -299,6 +299,8 @@ private fun StatusTab(
                     PingKind.TRIPWIRE -> "TRIPWIRE"
                     PingKind.INTERROGATION -> "interrogated"
                     PingKind.GO_LIVE -> "go live"
+                    PingKind.CLOSER -> "closer: ${p.radiusM.toInt()} m"
+                    PingKind.FLAG_THREAT -> "FLAG: ${p.radiusM.toInt()} m"
                 }
                 val who = p.identified?.displayName ?: "unknown intruder"
                 val lvl = if (myPerks?.keenEye == true && p.subjectLevel != null) " · lv ${p.subjectLevel}" else ""
