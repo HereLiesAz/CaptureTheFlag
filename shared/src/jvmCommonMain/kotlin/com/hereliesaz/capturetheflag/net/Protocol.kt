@@ -1,4 +1,4 @@
-package com.hereliesaz.capturetheflag.node
+package com.hereliesaz.capturetheflag.net
 
 import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.model.BleSighting

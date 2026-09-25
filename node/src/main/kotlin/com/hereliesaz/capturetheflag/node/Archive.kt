@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag.node
 
+import com.hereliesaz.capturetheflag.net.*
 import com.hereliesaz.capturetheflag.data.CityDirectory
 import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.geo.Polygon

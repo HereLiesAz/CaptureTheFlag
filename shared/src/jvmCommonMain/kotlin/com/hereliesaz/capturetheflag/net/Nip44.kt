@@ -1,13 +1,11 @@
-package com.hereliesaz.capturetheflag.node
+package com.hereliesaz.capturetheflag.net
 
 import fr.acinq.secp256k1.Secp256k1
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
-import javax.crypto.Cipher
 import javax.crypto.Mac
-import javax.crypto.spec.ChaCha20ParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
@@ -95,10 +93,43 @@ object Nip44 {
         return out.array()
     }
 
-    private fun chacha(key: ByteArray, nonce: ByteArray, input: ByteArray): ByteArray =
-        Cipher.getInstance("ChaCha20").apply {
-            init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "ChaCha20"), ChaCha20ParameterSpec(nonce, 0))
-        }.doFinal(input)
+    /**
+     * ChaCha20 (RFC 8439), counter from 0, in plain Kotlin: every Android version and every JVM
+     * gets the same cipher, whatever its crypto providers ship. Checked by the NIP-44 vectors.
+     */
+    private fun chacha(key: ByteArray, nonce: ByteArray, input: ByteArray): ByteArray {
+        fun le(b: ByteArray, i: Int) = (b[i].toInt() and 0xff) or ((b[i + 1].toInt() and 0xff) shl 8) or
+            ((b[i + 2].toInt() and 0xff) shl 16) or ((b[i + 3].toInt() and 0xff) shl 24)
+        val state = IntArray(16)
+        state[0] = 0x61707865; state[1] = 0x3320646e; state[2] = 0x79622d32; state[3] = 0x6b206574
+        for (i in 0 until 8) state[4 + i] = le(key, 4 * i)
+        for (i in 0 until 3) state[13 + i] = le(nonce, 4 * i)
+        val out = ByteArray(input.size)
+        val x = IntArray(16)
+        var counter = 0
+        var off = 0
+        while (off < input.size) {
+            state[12] = counter++
+            state.copyInto(x)
+            fun qr(a: Int, b: Int, c: Int, d: Int) {
+                x[a] += x[b]; x[d] = (x[d] xor x[a]).rotateLeft(16)
+                x[c] += x[d]; x[b] = (x[b] xor x[c]).rotateLeft(12)
+                x[a] += x[b]; x[d] = (x[d] xor x[a]).rotateLeft(8)
+                x[c] += x[d]; x[b] = (x[b] xor x[c]).rotateLeft(7)
+            }
+            repeat(10) {
+                qr(0, 4, 8, 12); qr(1, 5, 9, 13); qr(2, 6, 10, 14); qr(3, 7, 11, 15)
+                qr(0, 5, 10, 15); qr(1, 6, 11, 12); qr(2, 7, 8, 13); qr(3, 4, 9, 14)
+            }
+            for (i in 0 until 64) {
+                if (off + i >= input.size) break
+                val word = x[i / 4] + state[i / 4]
+                out[off + i] = (input[off + i].toInt() xor (word ushr (8 * (i % 4)))).toByte()
+            }
+            off += 64
+        }
+        return out
+    }
 
     private fun hmac(key: ByteArray, data: ByteArray): ByteArray =
         Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key, "HmacSHA256")) }.doFinal(data)

@@ -1,4 +1,4 @@
-package com.hereliesaz.capturetheflag.node
+package com.hereliesaz.capturetheflag.net
 
 import fr.acinq.secp256k1.Secp256k1
 import kotlinx.serialization.Serializable

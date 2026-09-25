@@ -3,6 +3,7 @@ plugins {
     id("com.android.kotlin.multiplatform.library")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.compose")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 kotlin {
@@ -26,6 +27,16 @@ kotlin {
             implementation("io.ktor:ktor-client-cio:3.6.0")
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
         }
+        // The node protocol (Nostr events, NIP-44, message types), shared by the phone and the node.
+        // Both targets are JVMs, so it can use java.security; secp256k1 comes with each target's native half.
+        val jvmCommonMain by creating {
+            dependsOn(commonMain.get())
+            dependencies { api("fr.acinq.secp256k1:secp256k1-kmp:0.24.0") }
+        }
+        androidMain.get().dependsOn(jvmCommonMain)
+        jvmMain.get().dependsOn(jvmCommonMain)
+        androidMain.dependencies { implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-android:0.24.0") }
+        jvmMain.dependencies { implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm:0.24.0") }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")

@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag.node
 
+import com.hereliesaz.capturetheflag.net.*
 import com.hereliesaz.capturetheflag.data.PhotoMatcher
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.LiveStream
@@ -7,8 +8,8 @@ import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.rules.GameRules
 import com.hereliesaz.capturetheflag.rules.Verdict
 import com.hereliesaz.capturetheflag.rules.Verification
-import com.hereliesaz.capturetheflag.node.ReviewReport.Check
-import com.hereliesaz.capturetheflag.node.ReviewReport.Result
+import com.hereliesaz.capturetheflag.net.ReviewReport.Check
+import com.hereliesaz.capturetheflag.net.ReviewReport.Result
 
 /**
  * A referee's review of a disputed stream: software, never a person. Every check is recorded,
