@@ -46,7 +46,7 @@ sealed interface Action {
     @Serializable @SerialName("placeJail") data class PlaceJail(
         val venue: String, val address: String, val lat: Double, val lng: Double, val photo: Evidence,
     ) : Action
-    @Serializable @SerialName("goLive") data class GoLive(val stream: String, val purpose: StreamPurpose, val fix: Position) : Action
+    @Serializable @SerialName("goLive") data class GoLive(val stream: String, val purpose: StreamPurpose, val fix: Position, val photo: Evidence? = null) : Action
     @Serializable @SerialName("frame") data class Frame(val stream: String, val fix: Position, val chunk: String) : Action
     @Serializable @SerialName("endStream") data class EndStream(val stream: String, val photo: Evidence) : Action
     @Serializable @SerialName("dispute") data class Dispute(val stream: String, val reason: String) : Action

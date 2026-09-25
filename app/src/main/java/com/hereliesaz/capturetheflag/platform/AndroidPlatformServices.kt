@@ -103,10 +103,11 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
         challenge: String?,
         status: String,
         lap: Boolean,
+        finishLabel: String?,
         onFrame: suspend (com.hereliesaz.capturetheflag.model.LocationFix, String) -> Unit,
         onFinish: (PhotoEvidence?) -> Unit,
         modifier: Modifier,
-    ) = LiveCameraView(this, challenge, status, lap, onFrame, onFinish, modifier)
+    ) = LiveCameraView(this, challenge, status, lap, finishLabel, onFrame, onFinish, modifier)
 
     override fun startProximity(token: String) = proximity.start(token)
     override fun stopProximity() = proximity.stop()

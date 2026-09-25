@@ -272,18 +272,15 @@ class NodeTest {
         }
         assertIs<GamePhase.Active>(g().phase)
 
-        // A run at the enemy flag: live from 60 m out, a frame every 5 s, the challenge answered, a still at the flag.
+        // A flag run: live on a qualifying frame of the flag, the challenge, then a frame every 5 s until the footage closes.
         val runner = g().players.values.first { !it.isLeader }
         val target = g().flags.getValue(runner.team.opponent).location
-        val start = GeoPoint(target.lat + 60 / 111_320.0, target.lng)
-        act(keyOf.getValue(runner.id), Action.GoLive("s1", StreamPurpose.CAPTURE, Position(start.lat, start.lng, net.now, 5.0)))
-        while (true) {
+        act(keyOf.getValue(runner.id), Action.GoLive("s1", StreamPurpose.CAPTURE, Position(target.lat, target.lng, net.now, 5.0), shot(target, net.now)))
+        assertNotNull(g().streams.getValue("s1").challenge)
+        while (g().streams.getValue("s1").open) {
             net.now += 5_000
             act(keyOf.getValue(runner.id), Action.Frame("s1", Position(target.lat, target.lng, net.now, 5.0), "chunk-${net.now}"))
-            val st = g().streams.getValue("s1")
-            if (st.challengeAt?.let { net.now - it >= GameRules.STREAM_CHALLENGE_ANSWER } == true) break
         }
-        act(keyOf.getValue(runner.id), Action.EndStream("s1", shot(target, net.now)))
         assertTrue(g().streams.getValue("s1").pending)
 
         // A defender disputes. Every referee reviews, votes, and seals its report to all four... leaders only.

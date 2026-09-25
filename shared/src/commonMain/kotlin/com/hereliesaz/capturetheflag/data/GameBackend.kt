@@ -51,15 +51,16 @@ interface GameBackend {
     suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence): Verdict
 
     /**
-     * Goes live for a capture or a jailbreak, from [fix], at least 50 m from the target. The
-     * stream's id is in the game's `streams` under this player.
+     * Goes live. A flag run starts on its qualifying frame, [photo], a still of the flag; a
+     * jailbreak from [fix], at least 50 m from the jail. The stream's id is in the game's
+     * `streams` under this player.
      */
-    suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix): Verdict
+    suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix, photo: PhotoEvidence? = null): Verdict
 
     /** One frame of this player's live stream: fix, and the hash of the video written since the last frame. */
     suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String): Verdict
 
-    /** Ends the stream on its target with a still from the last frame. Then the defenders may dispute. */
+    /** A jailbreak's winning frame, after the hold. Then the defenders may dispute. */
     suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence): Verdict
 
     /** A defender disputes a finished stream. */

@@ -197,15 +197,17 @@ class InMemoryBackend(
     override suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence) =
         apply(cityName) { engine.placeJail(it, myId(), venueName, address, venue, photo, clock()) }
 
-    override suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix) =
-        apply(cityName) { engine.goLive(it, myId(), "s-${random.nextLong().toULong().toString(36)}", purpose, fix, clock()) }
+    override suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix, photo: PhotoEvidence?): Verdict {
+        val ref = enemyOf(cityName)?.let { (g, t) -> g.flags[t]?.photo }
+        val score = if (purpose == StreamPurpose.CAPTURE && photo != null) ref?.let { matcher?.similarity(photo.imageUri, it.imageUri) } else null
+        return apply(cityName) { engine.goLive(it, myId(), "s-${random.nextLong().toULong().toString(36)}", purpose, fix, clock(), photo, score) }
+    }
 
     override suspend fun streamFrame(cityName: String, streamId: String, fix: LocationFix, chunk: String) =
         apply(cityName) { engine.streamFrame(it, myId(), streamId, fix, chunk, clock()) }
 
     override suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence): Verdict {
-        val stream = slot(cityName).value?.streams?.get(streamId)
-        val ref = enemyOf(cityName)?.let { (g, t) -> if (stream?.purpose == StreamPurpose.JAILBREAK) g.jails[t]?.photo else g.flags[t]?.photo }
+        val ref = enemyOf(cityName)?.let { (g, t) -> g.jails[t]?.photo }
         val score = ref?.let { matcher?.similarity(photo.imageUri, it.imageUri) }
         return apply(cityName) { engine.endStream(it, myId(), streamId, photo, clock(), score) }
     }

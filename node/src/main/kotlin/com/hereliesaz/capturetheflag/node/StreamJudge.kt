@@ -36,14 +36,19 @@ class StreamJudge(private val referee: String, private val matcher: PhotoMatcher
     private fun challengeTiming(s: LiveStream): Check {
         val at = s.challengeAt ?: return Check("Challenge on camera", Result.FAIL, "No challenge was issued before the stream ended")
         val after = (s.endedAt ?: s.lastFrame.at) - at
-        val ok = after >= GameRules.STREAM_CHALLENGE_ANSWER
-        return Check("Challenge on camera", if (ok) Result.PASS else Result.FAIL, "\"${s.challenge}\" shown at the start, ${after / 1000} s before the winning frame; ${GameRules.STREAM_CHALLENGE_ANSWER / 1000} s needed to say it")
+        val ok = after >= GameRules.STREAM_CHALLENGE_WINDOW
+        return Check("Challenge on camera", if (ok) Result.PASS else Result.FAIL, "\"${s.challenge}\" shown at the start, ${after / 1000} s before the footage ended; ${GameRules.STREAM_CHALLENGE_WINDOW / 1000} s needed to say it")
     }
 
-    /** The final still, checked again as at the finish: location, time, pose, facing, the reference photo's geometry. */
+    /**
+     * The deciding still, checked again as when it was taken: a flag run's qualifying frame at
+     * the start, a jailbreak's winning frame at the end. Location, time, pose, facing, the
+     * reference photo's geometry.
+     */
     private fun finalStill(g: Game, s: LiveStream): Check {
         val photo = s.finish ?: return Check("Final still", Result.FAIL, "No still was kept")
-        val at = s.endedAt ?: return Check("Final still", Result.FAIL, "The stream never finished")
+        val at = (if (s.purpose == StreamPurpose.CAPTURE) s.startedAt else s.endedAt)
+            ?: return Check("Final still", Result.FAIL, "The stream never finished")
         // Judge the still as of the finish: being jailed since doesn't unmake it.
         val then = g.copy(players = g.players + (s.by to g.players.getValue(s.by).copy(jailedAt = null)))
         val v = when (s.purpose) {

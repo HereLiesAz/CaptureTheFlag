@@ -69,13 +69,13 @@ object Briefing {
         game.streams.values.any { it.by == me.id && it.open } -> buildList {
             val s = game.streams.values.first { it.by == me.id && it.open }
             add("You are live. Keep the camera running: a gap over ${GameRules.STREAM_MAX_GAP / 1000} seconds voids the stream.")
-            s.challenge?.let { add("Say your challenge on camera now: \"$it\".") }
+            s.challenge?.let { add("Say your challenge on camera within ${GameRules.STREAM_CHALLENGE_WINDOW / 1000} seconds: \"$it\".") }
             if (s.purpose == StreamPurpose.CAPTURE) {
-                add("Walk up to the enemy flag and frame it from where their leader photographed it. That frame wins.")
+                add("Your frame of the flag qualified. Keep it rolling while you say the challenge; the footage for the referees ends ${GameRules.STREAM_CHALLENGE_WINDOW / 1000} seconds in.")
             } else {
                 add("Stay within ${GameRules.JAIL_REPORT_RADIUS_M.toInt()} m of the jail for ${GameRules.JAILBREAK_HOLD / MIN} minutes on camera, then take the winning frame. Leave and it is over.")
             }
-            add("After the winning frame, keep streaming as long as you like. The referees' footage stops there; the rest is yours.")
+            add("After that, keep streaming as long as you like. The referees' footage stops; the rest is yours.")
             add("You can be tagged while you stream. Jailed mid-stream, it's void.")
         }
         game.streams.values.any { it.by == me.id && it.pending } -> listOf(
@@ -94,7 +94,7 @@ object Briefing {
                 else add("They know who you are.")
             }
             add("Anyone on this side can jail you with a photo while your phones are close.")
-            add("Stream a run at their flag to win. Stream a ${GameRules.JAILBREAK_HOLD / MIN}-minute hold of their jail to free teammates. Go live at least ${GameRules.STREAM_APPROACH_M.toInt()} m out.")
+            add("Find their flag and go live on it to win: the stream starts on a frame of the flag, then you say a challenge. Stream a ${GameRules.JAILBREAK_HOLD / MIN}-minute hold of their jail, from ${GameRules.STREAM_APPROACH_M.toInt()} m out, to free teammates.")
             add("Get home unjailed to score for every ping you endured.")
         }
         else -> buildList {

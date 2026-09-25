@@ -542,11 +542,22 @@ class GameEngine(
     }
 
     /**
-     * Goes live for a capture or a jailbreak, at least [GameRules.STREAM_APPROACH_M] out, so the
-     * approach is on camera. The city is told, and can watch. The challenge is drawn now and
-     * shown at once: two words the streamer says at the start, proof the stream is live.
+     * Goes live for a capture or a jailbreak. The city is told, and can watch. The challenge is
+     * drawn now and shown on confirmation: two words to say on camera within
+     * [GameRules.STREAM_CHALLENGE_WINDOW], proof the stream is live.
+     *
+     * A flag run starts on its qualifying frame: [photo], a still of the flag with its sensor
+     * data, checked like any capture photo. Nothing tells a hunter they're near; the stream only
+     * exists once they've found it. The player holds the pose until it's confirmed, says the
+     * challenge, and the referees' footage ends [GameRules.STREAM_CHALLENGE_WINDOW] later.
+     *
+     * A jailbreak (the jail is public) starts at least [GameRules.STREAM_APPROACH_M] out, so the
+     * walk-in is on camera, and ends on a winning frame after the hold: [endStream].
      */
-    fun goLive(game: Game, by: PlayerId, id: String, purpose: StreamPurpose, fix: LocationFix, now: Millis): Transition {
+    fun goLive(
+        game: Game, by: PlayerId, id: String, purpose: StreamPurpose, fix: LocationFix, now: Millis,
+        photo: PhotoEvidence? = null, visualMatch: Double? = null,
+    ): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
         val p = game.players[by] ?: return game.reject("Not in this game")
         if (p.isJailed) return game.reject(if (purpose == StreamPurpose.CAPTURE) "Jailed players cannot capture" else "Jailed players cannot break anyone out")
@@ -561,13 +572,22 @@ class GameEngine(
             }
         }
         if (fix.accuracyM > GameRules.MAX_FIX_ACCURACY_M) return game.reject("Location too imprecise")
-        if (fix.point.distanceTo(target) < GameRules.STREAM_APPROACH_M) return game.reject("Go live at least ${GameRules.STREAM_APPROACH_M.toInt()} m out, so the approach is on camera")
+        when (purpose) {
+            StreamPurpose.CAPTURE -> {
+                val still = photo ?: return game.reject("A flag run starts on a frame of the flag")
+                val v = Verification.flagCapture(game, by, still, now, visualMatch)
+                if (v != Verdict.Valid) return Transition(game, v)
+            }
+            StreamPurpose.JAILBREAK -> if (fix.point.distanceTo(target) < GameRules.STREAM_APPROACH_M) {
+                return game.reject("Go live at least ${GameRules.STREAM_APPROACH_M.toInt()} m out, so the approach is on camera")
+            }
+        }
         val words = "${CHALLENGE_WORDS.random(random)} ${CHALLENGE_WORDS.random(random)}"
-        val s = LiveStream(id, by, purpose, target, now, fix, challenge = words, challengeAt = now)
-        val what = if (purpose == StreamPurpose.CAPTURE) "a flag run" else "a jailbreak"
+        val s = LiveStream(id, by, purpose, target, now, fix, challenge = words, challengeAt = now, finish = photo)
+        val headline = if (purpose == StreamPurpose.CAPTURE) "is live at the enemy flag!" else "is live on a jailbreak."
         return Transition(
             game.copy(streams = game.streams + (id to s)),
-            notices = listOf("${p.user.displayName} is live on $what. Their challenge: \"$words\"."),
+            notices = listOf("${p.user.displayName} $headline Their challenge: \"$words\"."),
         )
     }
 
@@ -590,37 +610,46 @@ class GameEngine(
                 !there && s.arrivedAt != null -> return dropStream(game, s, "Left the jail", now)
             }
         }
-        return Transition(g.copy(streams = g.streams + (id to next), lastFix = g.lastFix + (by to fix)))
+        g = g.copy(streams = g.streams + (id to next), lastFix = g.lastFix + (by to fix))
+        return if (next.purpose == StreamPurpose.CAPTURE && now >= next.challengeAt!! + GameRules.STREAM_CHALLENGE_WINDOW) closeFlagRun(g, next, now)
+        else Transition(g)
     }
 
     /**
-     * The winning frame: [photo] is a still from the stream, with its sensor data, checked like
-     * any capture photo. The referees' footage ends here; the phone may keep streaming for as
-     * long as the player likes, a victory lap the game doesn't judge. Then the defenders have
-     * [GameRules.STREAM_CONTEST_WINDOW] to dispute.
+     * A jailbreak's winning frame: [photo] is a still from the stream, with its sensor data,
+     * checked like any capture photo, after the hold and the challenge. The referees' footage
+     * ends here; the phone may keep streaming as long as the player likes, a victory lap the game
+     * doesn't judge. Then the defenders have [GameRules.STREAM_CONTEST_WINDOW] to dispute.
+     * (A flag run's footage ends by itself: see [goLive].)
      */
     fun endStream(game: Game, by: PlayerId, id: String, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Transition {
         val s = game.streams[id]?.takeIf { it.by == by } ?: return game.reject("No such stream")
         if (!s.open) return game.reject("Stream is over")
+        if (s.purpose == StreamPurpose.CAPTURE) return game.reject("A flag run's footage ends by itself, ${GameRules.STREAM_CHALLENGE_WINDOW / 1000} s after the challenge")
         if (now - s.lastFrame.at > GameRules.STREAM_MAX_GAP) return dropStream(game, s, "Stream dropped", now)
-        val said = s.challengeAt?.let { now - it >= GameRules.STREAM_CHALLENGE_ANSWER } == true
+        val said = s.challengeAt?.let { now - it >= GameRules.STREAM_CHALLENGE_WINDOW } == true
         if (!said) return game.reject("Say the challenge on camera first")
-        if (s.purpose == StreamPurpose.CAPTURE && s.lastFrame.point.distanceTo(s.target) > GameRules.FLAG_CAPTURE_TOLERANCE_M) {
-            return game.reject("Walk up to the flag on camera first")
-        }
-        val v = when (s.purpose) {
-            StreamPurpose.CAPTURE -> Verification.flagCapture(game, by, photo, now, visualMatch)
-            StreamPurpose.JAILBREAK -> {
-                val held = s.arrivedAt?.let { now - it } ?: 0
-                if (held < GameRules.JAILBREAK_HOLD) Verdict.Rejected("Stay on camera at the jail for ${GameRules.JAILBREAK_HOLD / GameRules.MINUTE} minutes")
-                else Verification.jailbreak(game, by, photo, now, visualMatch)
-            }
-        }
+        val held = s.arrivedAt?.let { now - it } ?: 0
+        val v = if (held < GameRules.JAILBREAK_HOLD) Verdict.Rejected("Stay on camera at the jail for ${GameRules.JAILBREAK_HOLD / GameRules.MINUTE} minutes")
+            else Verification.jailbreak(game, by, photo, now, visualMatch)
         if (v != Verdict.Valid) return Transition(game, v)
-        val done = s.copy(endedAt = now, finish = photo, contestUntil = now + GameRules.STREAM_CONTEST_WINDOW)
-        val name = game.players.getValue(by).user.displayName
+        return footageIn(game, s.copy(endedAt = now, finish = photo))
+    }
+
+    /**
+     * A flag run's footage ends [GameRules.STREAM_CHALLENGE_WINDOW] after the challenge, if the
+     * frames kept coming up to then. The stream itself carries on as the player's victory lap.
+     */
+    private fun closeFlagRun(game: Game, s: LiveStream, now: Millis): Transition {
+        val end = s.challengeAt!! + GameRules.STREAM_CHALLENGE_WINDOW
+        if (s.lastFrame.at < end - GameRules.STREAM_MAX_GAP) return dropStream(game, s, "Stream dropped", now)
+        return footageIn(game, s.copy(endedAt = end))
+    }
+
+    private fun footageIn(game: Game, done: LiveStream): Transition {
+        val name = game.players.getValue(done.by).user.displayName
         return Transition(
-            game.copy(streams = game.streams + (id to done)),
+            game.copy(streams = game.streams + (done.id to done.copy(contestUntil = done.endedAt!! + GameRules.STREAM_CONTEST_WINDOW))),
             notices = listOf("$name's stream is in. The defenders have ${GameRules.STREAM_CONTEST_WINDOW / GameRules.MINUTE} minutes to dispute it."),
         )
     }
@@ -681,6 +710,7 @@ class GameEngine(
             val s = t.game.streams.getValue(id)
             t += when {
                 s.open && t.game.players[s.by]?.isJailed == true -> dropStream(t.game, s, "Jailed mid-stream", now)
+                s.open && s.purpose == StreamPurpose.CAPTURE && now >= s.challengeAt!! + GameRules.STREAM_CHALLENGE_WINDOW -> closeFlagRun(t.game, s, now)
                 s.open && now - s.lastFrame.at > GameRules.STREAM_MAX_GAP -> dropStream(t.game, s, "Stream dropped", now)
                 s.pending && s.dispute == null && now >= s.contestUntil!! -> complete(t.game, s, now, null)
                 s.pending && s.ruling != null && now >= s.ruledAt!! + GameRules.STREAM_APPEAL_WINDOW -> settle(t.game, s, s.ruling, now)

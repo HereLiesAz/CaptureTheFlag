@@ -71,10 +71,13 @@ object GameRules {
     /** A rescuer must hold the enemy jail this long, unbroken, to free their team. */
     const val JAILBREAK_HOLD = 15 * MINUTE
 
-    /** A capture or jailbreak stream must start at least this far from its target, so the approach is on camera. */
+    /** A jailbreak stream must start at least this far from the jail, so the walk-in is on camera. */
     const val STREAM_APPROACH_M = 50.0
-    /** The challenge is shown on going live; the stream must run at least this long after, so it's said on camera. */
-    const val STREAM_CHALLENGE_ANSWER = 20_000L
+    /**
+     * The challenge is shown on going live, to be said on camera within this long. A flag run's
+     * footage ends here; a jailbreak's winning frame can't come sooner.
+     */
+    const val STREAM_CHALLENGE_WINDOW = 30_000L
     /** Frames further apart than this drop the stream. */
     const val STREAM_MAX_GAP = 20_000L
     /** How long defenders have to dispute a finished stream. */

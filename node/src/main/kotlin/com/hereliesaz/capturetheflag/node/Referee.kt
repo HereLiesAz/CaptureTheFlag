@@ -311,7 +311,7 @@ class Referee(
                     }
                 }
                 is Action.PlaceJail -> engine.placeJail(g, who, a.venue, a.address, GeoPoint(a.lat, a.lng), a.photo.toModel(), now)
-                is Action.GoLive -> engine.goLive(g, who, a.stream, a.purpose, a.fix.fix(), now)
+                is Action.GoLive -> engine.goLive(g, who, a.stream, a.purpose, a.fix.fix(), now, a.photo?.toModel())
                 is Action.Frame -> engine.streamFrame(g, who, a.stream, a.fix.fix(), a.chunk, now)
                 is Action.EndStream -> engine.endStream(g, who, a.stream, a.photo.toModel(), now)
                 is Action.Dispute -> engine.dispute(g, who, a.stream, a.reason, now)

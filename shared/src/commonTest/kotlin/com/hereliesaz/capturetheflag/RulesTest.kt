@@ -186,16 +186,28 @@ class RulesTest {
         assertTrue(twice.awards.isEmpty())
     }
 
-    @Test fun aFlagRunHasToWalkUpOnCamera() {
+    @Test fun aFlagRunStartsOnItsQualifyingFrame() {
         val g = activeGame()
         val p = g.players.values.first()
         val flag = g.flags.getValue(p.team.opponent).location
         val t = DAY + 20 * MINUTE
-        var tr = engine.goLive(g, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(flag.north(60.0), t, 5.0), t)
-        // Standing still 60 m out, then a still "at the flag": the frames say otherwise.
-        for (i in 1..6) tr += engine.streamFrame(tr.game, p.id, "s1", LocationFix(flag.north(60.0), t + i * FRAME_MS, 5.0), "c$i", t + i * FRAME_MS)
-        val end = t + 6 * FRAME_MS
-        assertEquals("Walk up to the flag on camera first", (engine.endStream(tr.game, p.id, "s1", photo(flag, end), end).verdict as Verdict.Rejected).reason)
+        // No frame, or a frame of the wrong thing: no stream, and nothing learned but "not that".
+        assertIs<Verdict.Rejected>(engine.goLive(g, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(flag, t, 5.0), t).verdict)
+        val elsewhere = flag.north(300.0)
+        assertIs<Verdict.Rejected>(engine.goLive(g, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(elsewhere, t, 5.0), t, photo(elsewhere, t)).verdict)
+        // The real thing: live at once, the challenge with it, and no 50 m walk-in needed.
+        val live = engine.goLive(g, p.id, "s1", StreamPurpose.CAPTURE, LocationFix(flag, t, 5.0), t, photo(flag, t))
+        assertEquals(Verdict.Valid, live.verdict)
+        assertNotNull(live.game.streams.getValue("s1").challenge)
+        assertIs<Verdict.Rejected>(engine.endStream(live.game, p.id, "s1", photo(flag, t + 1), t + 1).verdict, "a flag run ends by itself")
+        // Frames through the challenge window: the footage closes itself, and the dispute window opens.
+        var tr = live
+        for (i in 1..6) tr += engine.streamFrame(tr.game, p.id, "s1", LocationFix(flag, t + i * FRAME_MS, 5.0), "c$i", t + i * FRAME_MS)
+        val s = tr.game.streams.getValue("s1")
+        assertEquals(t + GameRules.STREAM_CHALLENGE_WINDOW, s.endedAt)
+        assertTrue(s.pending)
+        // Going quiet before the window closes voids it.
+        assertEquals("Stream dropped", engine.tick(live.game, t + GameRules.STREAM_CHALLENGE_WINDOW).game.streams.getValue("s1").void)
     }
 
     @Test fun aCaptureInReviewHoldsTheFinalWhistle() {

@@ -81,6 +81,7 @@ internal fun LiveCameraView(
     challenge: String?,
     status: String,
     lap: Boolean,
+    finishLabel: String?,
     onFrame: suspend (LocationFix, String) -> Unit,
     onFinish: (com.hereliesaz.capturetheflag.model.PhotoEvidence?) -> Unit,
     modifier: Modifier,
@@ -147,10 +148,7 @@ internal fun LiveCameraView(
         }
         Column(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.55f)).padding(16.dp)) {
             Text(if (lap) "● LIVE: VICTORY LAP" else "● LIVE", color = Color.White, fontWeight = FontWeight.Bold)
-            if (!lap) Text(
-                challenge?.let { "Say it on camera: \"$it\"" } ?: "Your challenge is on its way.",
-                color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
-            )
+            if (!lap) challenge?.let { Text("Say it on camera: \"$it\"", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
             Text(status, color = Color.White)
             error?.let { Text(it, color = Color.White) }
         }
@@ -158,7 +156,7 @@ internal fun LiveCameraView(
             OutlinedButton(enabled = !busy, onClick = { recording?.stop(); recording = null; onFinish(null) }) {
                 Text(if (lap) "End stream" else "Abandon", color = Color.White)
             }
-            if (!lap) Button(enabled = !busy && recording != null, onClick = {
+            if (!lap && finishLabel != null) Button(enabled = !busy && recording != null, onClick = {
                 busy = true
                 scope.launch {
                     val fix = runCatching { fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
@@ -172,7 +170,7 @@ internal fun LiveCameraView(
                     // Recording carries on: past the winning frame is the victory lap.
                     onFinish(services.evidence(shot, pose))
                 }
-            }) { Text("Winning frame") }
+            }) { Text(finishLabel) }
         }
     }
 }

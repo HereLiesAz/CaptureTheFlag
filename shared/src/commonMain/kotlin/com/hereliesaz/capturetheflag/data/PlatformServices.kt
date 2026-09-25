@@ -18,7 +18,8 @@ interface PlatformServices {
      * The live camera for a capture or jailbreak stream. Records video with sound (a jailbreak's
      * challenge is spoken) and calls [onFrame] every few seconds with a fresh fix and the SHA-256
      * of the video written since the previous frame. Shows [challenge] once issued, and [status].
-     * The winning frame is a still, handed to [onFinish], and recording carries on. In [lap]
+     * [finishLabel] names the button that takes the qualifying or winning frame, a still handed
+     * to [onFinish] while recording carries on; null hides it. In [lap]
      * mode (after the winning frame) no frames are sent: the stream is the player's own, and
      * ending it hands [onFinish] null, as does abandoning a stream.
      */
@@ -27,6 +28,7 @@ interface PlatformServices {
         challenge: String?,
         status: String,
         lap: Boolean,
+        finishLabel: String?,
         onFrame: suspend (LocationFix, String) -> Unit,
         onFinish: (PhotoEvidence?) -> Unit,
         modifier: Modifier,
