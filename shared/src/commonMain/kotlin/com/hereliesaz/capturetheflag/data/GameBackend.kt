@@ -55,6 +55,15 @@ interface GameBackend {
     /** Sends a decoy ping from [at]. Requires the decoy perk. */
     suspend fun decoy(cityName: String, at: GeoPoint): Verdict
 
+    /** Interrogate: forces a private extra ping on an intruder you were pinged about. */
+    suspend fun interrogate(cityName: String, subject: PlayerId): Verdict
+
+    /** Vanish: swallows your next scheduled incursion ping. */
+    suspend fun vanish(cityName: String): Verdict
+
+    /** Bounty: marks one enemy for the round. */
+    suspend fun bounty(cityName: String, target: PlayerId): Verdict
+
     /** Every point ever awarded. Standings and levels derive from it via [com.hereliesaz.capturetheflag.rules.Leaderboard]. */
     val ledger: StateFlow<List<Award>>
 

@@ -11,17 +11,17 @@ import kotlin.random.Random
  */
 object PingSchedule {
     /** Gap preceding ping [n] (1-based). */
-    fun gapBefore(n: Int, perks: Perks = Perks.forTier(0)): Long {
+    fun gapBefore(n: Int, perks: Perks = Perks.forPower(0)): Long {
         require(n >= 1)
         val base = GameRules.PING_GAPS.getOrElse(n - 1) { GameRules.PING_GAPS.last() }
         return if (n == 2) base + perks.firstPingDelayMs else base
     }
 
     /** When ping [n] is due for an incursion that began at [enteredAt]. */
-    fun dueAt(enteredAt: Millis, n: Int, perks: Perks = Perks.forTier(0)): Millis =
+    fun dueAt(enteredAt: Millis, n: Int, perks: Perks = Perks.forPower(0)): Millis =
         enteredAt + (1..n).sumOf { gapBefore(it, perks) }
 
-    fun identifies(n: Int, perks: Perks = Perks.forTier(0)): Boolean =
+    fun identifies(n: Int, perks: Perks = Perks.forPower(0)): Boolean =
         n >= GameRules.IDENTIFY_FROM_PING + perks.identityDelayPings
 
     /** A fresh random third (rounded up, at least one) of [opponents]. */

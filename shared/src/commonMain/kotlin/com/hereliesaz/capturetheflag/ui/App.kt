@@ -44,6 +44,8 @@ import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.Outcome
 import com.hereliesaz.capturetheflag.model.Ping
+import com.hereliesaz.capturetheflag.model.PingKind
+import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.model.Player
 import com.hereliesaz.capturetheflag.model.Role
 import com.hereliesaz.capturetheflag.rules.GameRules
@@ -152,7 +154,7 @@ private fun GameScreen(
             when (tab) {
                 Tab.STATUS -> StatusTab(backend, g, mine, now, fix?.let { g.territory.ownerOf(it.point) }, pings, city, onLeave)
                 Tab.ROSTER -> RosterTab(platform, g, mine)
-                Tab.ACT -> ActTab(backend, platform, g, mine, city)
+                Tab.ACT -> ActTab(backend, platform, g, mine, city, pings)
                 Tab.RANKS -> RanksTab(backend, g)
                 Tab.CHAT -> ChatTab(backend, g, mine, city)
             }
@@ -210,7 +212,18 @@ private fun StatusTab(
         if (pings.isNotEmpty()) {
             item { HorizontalDivider(); Text("PINGS", fontWeight = FontWeight.Bold) }
             items(pings) { p ->
-                Text("#${p.number} · ${p.identified?.displayName ?: "unknown intruder"} · %.5f, %.5f".fmt(p.location.lat, p.location.lng))
+                val myPerks = mine?.let { Progression.perksFor(it.level) }
+                val label = when (p.kind) {
+                    PingKind.INCURSION -> "#${p.number}"
+                    PingKind.TRACKING -> "trail"
+                    PingKind.TRIPWIRE -> "TRIPWIRE"
+                    PingKind.INTERROGATION -> "interrogated"
+                }
+                val who = p.identified?.displayName ?: "unknown intruder"
+                val lvl = if (myPerks?.keenEye == true && p.subjectLevel != null) " · lv ${p.subjectLevel}" else ""
+                val fuzz = if (p.radiusM > 0) " ±${p.radiusM.toInt()} m" else ""
+                val decoy = if (mine?.id in p.decoyRevealedTo) " · DECOY" else ""
+                Text("$label · $who$lvl$decoy · %.5f, %.5f".fmt(p.location.lat, p.location.lng) + fuzz)
             }
         }
     }
@@ -235,7 +248,7 @@ private fun RosterTab(platform: PlatformServices, g: Game, mine: Player?) {
 }
 
 @Composable
-private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mine: Player?, city: String) {
+private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mine: Player?, city: String, pings: List<Ping>) {
     val scope = rememberCoroutineScope()
     var result by remember { mutableStateOf<String?>(null) }
     fun report(v: Verdict) { result = when (v) { Verdict.Valid -> "Confirmed."; is Verdict.Rejected -> v.reason } }
@@ -264,6 +277,31 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                         report(backend.decoy(city, here))
                     }
                 }) { Text("Send decoy from here ($decoysLeft left)") }
+                val perks = Progression.perksFor(mine.level)
+                val vanishesLeft = perks.vanishesPerGame - (g.vanishesUsed[mine.id] ?: 0)
+                if (vanishesLeft > 0 && mine.id in g.incursions) OutlinedButton(onClick = {
+                    scope.launch { report(backend.vanish(city)) }
+                }) { Text("Vanish: skip next ping ($vanishesLeft left)") }
+                val interrogationsLeft = perks.interrogationsPerGame - (g.interrogationsUsed[mine.id] ?: 0)
+                if (interrogationsLeft > 0) {
+                    pings.filter { it.kind == PingKind.INCURSION && it.subject in g.incursions }
+                        .distinctBy { it.subject }.forEach { p ->
+                            OutlinedButton(onClick = { scope.launch { report(backend.interrogate(city, p.subject)) } }) {
+                                Text("Interrogate ${p.identified?.displayName ?: "intruder #${p.number}"} ($interrogationsLeft left)")
+                            }
+                        }
+                }
+                if (perks.bountyMultiplier > 1 && mine.id !in g.bounties) {
+                    Text("Place a bounty (×${perks.bountyMultiplier}):")
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        g.team(mine.team.opponent).forEach { e ->
+                            FilterChip(selected = false, onClick = { scope.launch { report(backend.bounty(city, e.id)) } }, label = { Text(e.user.displayName) })
+                        }
+                    }
+                }
+                GameEngine.flagSense(g, mine.id)?.let { (c, r) ->
+                    Text("Flag Sense: enemy flag within ${r.toInt()} m of %.5f, %.5f".fmt(c.lat, c.lng))
+                }
                 Button(enabled = !mine.isJailed, onClick = {
                     scope.launch { platform.takePhoto()?.let { report(backend.captureFlag(city, it)) } }
                 }) { Text("Photograph enemy flag") }
@@ -406,11 +444,11 @@ private fun RanksTab(backend: GameBackend, g: Game) {
     val board = if (cityBoard) Leaderboard.city(ledger, g.city.id) else Leaderboard.global(ledger)
     val myPoints = me?.let { u -> Leaderboard.totals(ledger)[u.id] } ?: 0L
     val level = Progression.levelFor(myPoints)
-    val tier = Progression.tierFor(level)
+    val next = Progression.nextMilestone(level)
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { Title("LEVEL $level") }
         item { Text("$myPoints pts · ${Progression.pointsFor(level + 1) - myPoints} to level ${level + 1}") }
-        item { Text("Next advantage at level ${Progression.milestone(tier + 1)}") }
+        item { Text("Next advantage at level $next" + if (Progression.powerAt(next) > 1) " · double" else "") }
         item { perkLines(Progression.perksFor(level)).forEach { Text(it) } }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -427,10 +465,33 @@ private fun RanksTab(backend: GameBackend, g: Game) {
 }
 
 private fun perkLines(p: Perks): List<String> = buildList {
-    if (p.firstPingDelayMs > 0) add("Second ping delayed ${p.firstPingDelayMs / GameRules.MINUTE} min")
+    val min = GameRules.MINUTE
+    if (p.firstPingDelayMs > 0) add("Second ping delayed ${p.firstPingDelayMs / min} min")
     if (p.identityDelayPings > 0) add("Identity hidden ${p.identityDelayPings} extra pings")
-    if (p.proximityAlertM > 0) add("Alerted to intruders within ${p.proximityAlertM.toInt()} m")
-    if (p.bleWindowBonusMs > 0) add("Tag window +${p.bleWindowBonusMs / 1000} s")
+    if (p.thresholdMs > 0) add("Threshold: ${p.thresholdMs / 1000} s on enemy ground before it counts")
+    if (p.blurM > 0) add("Blur: pings off by up to ${p.blurM.toInt()} m")
+    if (p.crowdFactor > 0) add("Crowd: blur ×${1 + p.crowdFactor} per unit of density above average")
+    if (p.nightCoverDivisor > 0) add("Night Cover: fewer recipients 1–5am")
+    if (p.shadowDivisor > 0) add("Shadow: fewer recipients always")
+    if (p.vanishesPerGame > 0) add("Vanish ×${p.vanishesPerGame} per game")
+    if (p.lastStandsPerGame > 0) add("Last Stand ×${p.lastStandsPerGame} per game")
+    if (p.legacyCapLevel != null) add("Legacy: your value frozen at level ${p.legacyCapLevel}, −${(p.legacyDiscount * 100).toInt()}%")
+    p.paroleMs?.let { add("Parole after ${it / GameRules.HOUR} h") }
     if (p.decoysPerGame > 0) add("${p.decoysPerGame} decoy pings per game")
+    if (p.doppelgangerSteps > 0) add("Doppelgänger: decoys walk ${p.doppelgangerSteps} steps")
+    if (p.proximityAlertM > 0) add("Alerted to intruders within ${p.proximityAlertM.toInt()} m")
+    if (p.witnessM > 0) add("Witness: teammates within ${p.witnessM.toInt()} m share your alerts")
+    if (p.bleWindowBonusMs > 0) add("Tag window +${p.bleWindowBonusMs / 1000} s")
+    if (p.sharpLensM > 0) add("Sharp Lens: +${p.sharpLensM.toInt()} m tag tolerance")
+    if (p.keenEye) add("Keen Eye: pings show intruder level")
+    if (p.counterintelM > 0) add("Counterintel: decoys within ${p.counterintelM.toInt()} m exposed")
+    if (p.interrogationsPerGame > 0) add("Interrogate ×${p.interrogationsPerGame} per game")
+    if (p.bountyMultiplier > 1) add("Bounty: marked enemy worth ×${p.bountyMultiplier}")
+    if (p.bloodhoundMs > 0) add("Bloodhound: follow intruders ${p.bloodhoundMs / 1000} s after a ping")
+    if (p.tripwireM > 0) add("Tripwire: ${p.tripwireM.toInt()} m around your flag")
+    if (p.flagSenseM > 0) add("Flag Sense: enemy flag within a ${p.flagSenseM.toInt()} m circle")
+    if (p.standingWeight > 0) add("Standing: captain draw weight +${p.standingWeight}")
+    if (p.mentorShare > 0) add("Mentor: nearby juniors earn +${(p.mentorShare * 100).toInt()}%")
+    if (p.deliberateMs > 0) add("Deliberate: +${p.deliberateMs / min} min to place the flag")
     if (isEmpty()) add("No advantages yet.")
 }

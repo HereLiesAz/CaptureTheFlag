@@ -34,17 +34,43 @@ Every verified event writes an `Award` to a ledger. Levels, perks and both leade
 
 **Levels** are unlimited. Level *L* needs `50 × (L−1)^2.5` lifetime points, so every level costs more than the last.
 
-**Advantages** unlock at milestone levels 2, 6, 12, 20, 30, 42… (tier *t* at `t(t+1)`); the gaps widen and every tier strengthens every perk:
+**Advantages** arrive only at milestone levels, always multiples of 5, spreading further apart: 5, 15, 30, 50, 75, 105, 140, 180… Each milestone grants one step of *power*; milestones that are also multiples of 10 grant two. Nothing below level 5.
 
-| Perk | Per tier | Cap |
-|---|---|---|
-| Second incursion ping delayed | +5 min | 60 min |
-| Identity hidden longer | +1 ping every 2 tiers | none |
-| Alerted to intruders nearby, regardless of the random third | +250 m radius | 5 km |
-| Wider BLE tag window | +15 s | +5 min |
-| Decoy pings (fake anonymous ping from enemy ground) | +1 every 3 tiers | none |
+Each perk switches on at a power and grows with *k²*, where *k* is the steps since. Early advantages are barely noticeable; late ones decide games. Use-counts grow as ⌈*k*/2⌉. Caps only where uncapped would break the game.
 
-Caps sit only where an uncapped value would break the game. Level is snapshotted when teams are dealt and holds for the round.
+| Power (level) | Perk | Effect | Per k² | Cap |
+|---|---|---|---|---|
+| 1 (5) | Ping delay | Second incursion ping later | 1 min | 60 min |
+| 1 (5) | Proximity alert | Intruders within radius always ping you | 25 m | 5 km |
+| 1 (5) | Tag window | Wider BLE window when tagging | 2 s | 5 min |
+| 3 (30) | Identity delay | Roster identity withheld longer | ⌈k/2⌉ pings | — |
+| 3 (30) | Keen Eye | Pings show intruder level | on | — |
+| 4 (30) | Threshold | Grace on enemy ground before an incursion counts | 30 s | 15 min |
+| 4 (30) | Counterintel | Decoys near you marked as decoys | 50 m | 5 km |
+| 5 (50) | Decoy | Fake anonymous ping from enemy ground | ⌈k/2⌉ / game | — |
+| 5 (50) | Sharp Lens | Tag photo distance tolerance | 3 m | +60 m |
+| 5 (50) | Night Cover | Fewer ping recipients 1–5am local | divisor +0.1 | 1/10 |
+| 6 (50) | Blur | Your pings off by up to a radius until identified | 10 m | 1 km |
+| 6 (50) | Witness | Teammates near you share your alerts | 10 m | 1 km |
+| 7 (75) | Standing | Captain draw weight | +0.05 | — |
+| 7 (75) | Mentor | Nearby lower-level teammates earn a bonus share | 2% | 50% |
+| 8 (105) | Shadow | Fewer ping recipients always | divisor +0.1 | 1/10 |
+| 8 (105) | Crowd | Blur grows with local population density | ×0.05 | — |
+| 9 (140) | Interrogate | Private extra ping on an intruder you were pinged about | ⌈k/2⌉ / game | — |
+| 9 (140) | Bounty | Mark an enemy; your team's jail value on them multiplied | +0.1× | 3× |
+| 10 (140) | Deliberate | Longer flag-placement window for your team | 1 min | 60 min |
+| 10 (140) | Parole | Auto-release from jail | 48 h − 2 h | ≥ 2 h |
+| 12 (180) | Vanish | Cancel your next scheduled ping | ⌈k/2⌉ / game | — |
+| 12 (180) | Doppelgänger | Decoys walk on, one ping per 5 min | 1 + k² steps | 20 |
+| 15 (330) | Bloodhound | Live position of intruders after a ping | 30 s | 10 min |
+| 15 (330) | Tripwire | Alert when enemies cross in near your flag | 100 m | 3 km |
+| 20 (525) | Flag Sense | Circle known to contain the enemy flag | shrinks from 3 km | ≥ 200 m |
+| 20 (525) | Legacy | Your jail value freezes at 525, then discounts | 1% | 50% |
+| 20 (525) | Last Stand | A tag against you is thrown out, publicly | ⌈k/2⌉ / game | — |
+
+When hiding meets hunting, the higher level wins; ties go to the hunter. Blur yields to an equal-or-higher Bloodhound or interrogator; Counterintel works only on decoys from equal-or-lower senders; Tripwire beats Threshold for equal-or-higher defenders.
+
+Level is snapshotted when teams are dealt and holds for the round.
 
 **Rankings** are global (lifetime points) and per city (points earned there). Both show lifetime level. Ties share a rank.
 
@@ -53,7 +79,7 @@ Caps sit only where an uncapped value would break the game. Level is snapshotted
 ~~~
 shared/   Compose Multiplatform (android + jvm). Rules, engine, chat, UI. No platform code.
   commonMain/.../geo        Distance, polygon, dividing line
-  commonMain/.../rules      Partitioner, ping schedule, team assignment, verification
+  commonMain/.../rules      Partitioner, ping schedule, team assignment, verification, progression, leaderboard
   commonMain/.../engine     GameEngine: pure (state, input, time, random) → state + pings
   commonMain/.../data       GameBackend / PlatformServices interfaces, InMemoryBackend
   commonMain/.../ui         Screens
@@ -73,7 +99,7 @@ Each phone advertises a server-issued token that rotates every 15 minutes over B
 
 - **Backend.** `InMemoryBackend` is single-device, for development only. Needs a real server (Firebase, Supabase, Ktor…) running `GameEngine`.
 - **City data.** `CityDataSource` needs real feeds: census population, OSM buildings/land/water, barrier features. `DemoCityDirectory` is a synthetic New Orleans.
-- **Jailbreak.** The rescue mechanic is not yet specified. `GameEngine.release` is the hook.
+- **Jailbreak.** The rescue mechanic is not yet specified. `GameEngine.release` is the hook. Parole is the only way out until then.
 - **Flag forfeit detection.** How a moved flag is detected (periodic re-photo, challenge by opponents, moderation) is not yet specified. `GameEngine.forfeit` is the hook.
 - **Camera EXIF.** Many stock cameras strip GPS unless location tagging is turned on. An in-app CameraX capture would remove that dependency.
 - **Background location** permission needs its own settings-screen request on Android 11+.
