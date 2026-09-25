@@ -77,5 +77,11 @@ class RelayClient(private val url: String, private val http: HttpClient, private
         }
     }
 
-    private companion object { const val RECONNECT_MS = 2_000L }
+    companion object {
+        private const val RECONNECT_MS = 2_000L
+
+        /** A started client for [url] (`ws://` or `wss://`), on its own HTTP engine. */
+        fun open(url: String, scope: CoroutineScope): RelayClient =
+            RelayClient(url, HttpClient(io.ktor.client.engine.cio.CIO) { install(io.ktor.client.plugins.websocket.WebSockets) }, scope).also { it.start() }
+    }
 }
