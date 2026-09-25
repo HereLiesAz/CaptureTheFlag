@@ -167,6 +167,12 @@ class RulesTest {
         val ok = engine.tag(g, defender.id, intruder.id, photo(spot, t, listOf(BleSighting("tok", t, -60))), t, ble)
         assertEquals(Verdict.Valid, ok.verdict)
         assertTrue(ok.game.players.getValue(intruder.id).isJailed)
+        assertEquals(listOf(defender.id to 12L, intruder.id to -5L), ok.awards.map { it.user to it.points })
+        // Released and re-jailed by the same defender: no second payout.
+        val again = engine.release(ok.game, intruder.id).game
+        val twice = engine.tag(again, defender.id, intruder.id, photo(spot, t, listOf(BleSighting("tok", t, -60))), t, ble)
+        assertEquals(Verdict.Valid, twice.verdict)
+        assertTrue(twice.awards.isEmpty())
     }
 
     @Test fun doctoredExifRejected() {
@@ -178,6 +184,9 @@ class RulesTest {
         assertIs<Verdict.Rejected>(engine.captureFlag(g, p.id, forged, t).verdict)
         val real = engine.captureFlag(g, p.id, photo(flag.location, t), t)
         assertEquals(Outcome.FlagCaptured(p.team, p.id), (real.game.phase as GamePhase.Ended).outcome)
+        val pts = real.awards.groupBy { it.user }.mapValues { (_, v) -> v.sumOf { it.points } }
+        assertEquals(125L + if (p.isLeader) 15 else 0, pts[p.id])
+        assertTrue(g.team(p.team.opponent).none { it.id in pts })
     }
 
     @Test fun sevenDaysWithoutCaptureIsATie() {

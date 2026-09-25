@@ -7,6 +7,7 @@ import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.engine.Transition
 import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.geo.Polygon
+import com.hereliesaz.capturetheflag.model.Award
 import com.hereliesaz.capturetheflag.model.City
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
@@ -22,6 +23,7 @@ import com.hereliesaz.capturetheflag.rules.BleTokenRegistry
 import com.hereliesaz.capturetheflag.rules.CityCell
 import com.hereliesaz.capturetheflag.rules.CityPartitioner
 import com.hereliesaz.capturetheflag.rules.GameRules
+import com.hereliesaz.capturetheflag.rules.Leaderboard
 import com.hereliesaz.capturetheflag.rules.Verdict
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -46,7 +48,10 @@ class InMemoryBackend(
     private val clock: () -> Millis,
     private val random: Random = Random.Default,
 ) : GameBackend {
-    private val engine = GameEngine(random)
+    private val _ledger = MutableStateFlow<List<Award>>(emptyList())
+    override val ledger: StateFlow<List<Award>> = _ledger.asStateFlow()
+    private val users = mutableMapOf<PlayerId, User>()
+    private val engine = GameEngine(random) { Leaderboard.levelOf(_ledger.value, it) }
     private val partitioner = CityPartitioner()
     private val games = mutableMapOf<String, MutableStateFlow<Game?>>()
     private val threads = mutableMapOf<String, MutableStateFlow<List<ChatMessage>>>()
@@ -69,17 +74,21 @@ class InMemoryBackend(
         ticked.pings.forEach { pingBus.tryEmit(it) }
         val result = t(ticked.game)
         result.pings.forEach { pingBus.tryEmit(it) }
+        _ledger.update { it + ticked.awards + result.awards }
         flow.value = result.game
         return result.verdict
     }
 
     override suspend fun register(displayName: String, selfieUri: String): User =
-        User("u-${random.nextLong().toULong().toString(36)}", displayName, selfieUri).also { _me.value = it }
+        User("u-${random.nextLong().toULong().toString(36)}", displayName, selfieUri)
+            .also { users[it.id] = it; _me.value = it }
 
     override suspend fun requestCity(cityName: String): Game {
         val flow = slot(cityName)
         flow.value?.let { current ->
-            val t = engine.tick(current, clock()).game
+            val ticked = engine.tick(current, clock())
+            _ledger.update { it + ticked.awards }
+            val t = ticked.game
             if (t.phase !is GamePhase.Ended) return t.also { flow.value = it }
         }
         val (city, cells) = directory.resolve(cityName) ?: error("Unknown city: $cityName")
@@ -117,6 +126,10 @@ class InMemoryBackend(
         return random.nextBytes(8).joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
             .also { tokens[it] = id to now }
     }
+
+    override suspend fun decoy(cityName: String, at: GeoPoint) = apply(cityName) { engine.decoy(it, myId(), at, clock()) }
+
+    override fun displayName(user: PlayerId) = users[user]?.displayName ?: user
 
     override fun pings(cityName: String): Flow<Ping> = pingBus.filter { _me.value?.id in it.recipients }
 

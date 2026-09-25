@@ -95,8 +95,9 @@ object Verification {
         if (exif.distanceTo(targetFix.point) > GameRules.TAG_TOLERANCE_M) {
             return Verdict.Rejected("That player was not where the photo was taken")
         }
+        val window = GameRules.BLE_WINDOW + Progression.perksFor(tagger.level).bleWindowBonusMs
         val heard = photo.bleSightings.any {
-            abs(it.at - photo.exifTakenAt) <= GameRules.BLE_WINDOW && ble.ownerOf(it.token, it.at) == target
+            abs(it.at - photo.exifTakenAt) <= window && ble.ownerOf(it.token, it.at) == target
         }
         if (!heard) return Verdict.Rejected("That player's phone was not nearby")
         return Verdict.Valid

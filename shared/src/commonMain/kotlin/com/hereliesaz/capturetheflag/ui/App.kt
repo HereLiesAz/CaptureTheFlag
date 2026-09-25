@@ -47,6 +47,9 @@ import com.hereliesaz.capturetheflag.model.Ping
 import com.hereliesaz.capturetheflag.model.Player
 import com.hereliesaz.capturetheflag.model.Role
 import com.hereliesaz.capturetheflag.rules.GameRules
+import com.hereliesaz.capturetheflag.rules.Leaderboard
+import com.hereliesaz.capturetheflag.rules.Perks
+import com.hereliesaz.capturetheflag.rules.Progression
 import com.hereliesaz.capturetheflag.rules.Verdict
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -107,7 +110,7 @@ private fun CityScreen(backend: GameBackend, onPicked: (String) -> Unit) {
     }
 }
 
-private enum class Tab(val label: String) { STATUS("Status"), ROSTER("Roster"), ACT("Act"), CHAT("Chat") }
+private enum class Tab(val label: String) { STATUS("Status"), ROSTER("Roster"), ACT("Act"), RANKS("Ranks"), CHAT("Chat") }
 
 @Composable
 private fun GameScreen(
@@ -150,6 +153,7 @@ private fun GameScreen(
                 Tab.STATUS -> StatusTab(backend, g, mine, now, fix?.let { g.territory.ownerOf(it.point) }, pings, city, onLeave)
                 Tab.ROSTER -> RosterTab(platform, g, mine)
                 Tab.ACT -> ActTab(backend, platform, g, mine, city)
+                Tab.RANKS -> RanksTab(backend, g)
                 Tab.CHAT -> ChatTab(backend, g, mine, city)
             }
         }
@@ -223,7 +227,7 @@ private fun RosterTab(platform: PlatformServices, g: Game, mine: Player?) {
                 Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     platform.Portrait(p.user.selfieUrl, Modifier.size(56.dp))
                     Spacer(Modifier.size(12.dp))
-                    Text(p.user.displayName + roleTag(p) + if (p.isJailed) " · jailed" else "")
+                    Text(p.user.displayName + " · lv ${p.level}" + roleTag(p) + if (p.isJailed) " · jailed" else "")
                 }
             }
         }
@@ -253,6 +257,13 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 } else Text(g.flags[mine.team]?.let { "Flag placed at ${it.venueName}." } ?: "Waiting on your leaders.")
             }
             is GamePhase.Active -> {
+                val decoysLeft = Progression.perksFor(mine.level).decoysPerGame - (g.decoysUsed[mine.id] ?: 0)
+                if (decoysLeft > 0) OutlinedButton(enabled = !mine.isJailed, onClick = {
+                    scope.launch {
+                        val here = platform.location.value?.point ?: return@launch report(Verdict.Rejected("No location"))
+                        report(backend.decoy(city, here))
+                    }
+                }) { Text("Send decoy from here ($decoysLeft left)") }
                 Button(enabled = !mine.isJailed, onClick = {
                     scope.launch { platform.takePhoto()?.let { report(backend.captureFlag(city, it)) } }
                 }) { Text("Photograph enemy flag") }
@@ -385,4 +396,41 @@ private fun String.fmt(vararg xs: Double): String {
         val r = kotlin.math.round(kotlin.math.abs(x) * scale).toLong()
         (if (x < 0) "-" else "") + "${r / scale}." + (r % scale).toString().padStart(digits, '0')
     }
+}
+
+@Composable
+private fun RanksTab(backend: GameBackend, g: Game) {
+    val ledger by backend.ledger.collectAsState()
+    val me by backend.me.collectAsState()
+    var cityBoard by remember { mutableStateOf(true) }
+    val board = if (cityBoard) Leaderboard.city(ledger, g.city.id) else Leaderboard.global(ledger)
+    val myPoints = me?.let { u -> Leaderboard.totals(ledger)[u.id] } ?: 0L
+    val level = Progression.levelFor(myPoints)
+    val tier = Progression.tierFor(level)
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { Title("LEVEL $level") }
+        item { Text("$myPoints pts · ${Progression.pointsFor(level + 1) - myPoints} to level ${level + 1}") }
+        item { Text("Next advantage at level ${Progression.milestone(tier + 1)}") }
+        item { perkLines(Progression.perksFor(level)).forEach { Text(it) } }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = cityBoard, onClick = { cityBoard = true }, label = { Text(g.city.name) })
+                FilterChip(selected = !cityBoard, onClick = { cityBoard = false }, label = { Text("Global") })
+            }
+        }
+        if (board.isEmpty()) item { Text("No one has scored. Yet.") }
+        items(board) { s ->
+            val bold = if (s.user == me?.id) FontWeight.Bold else FontWeight.Normal
+            Text("${s.rank}. ${backend.displayName(s.user)} · lv ${s.level} · ${s.points}", fontWeight = bold)
+        }
+    }
+}
+
+private fun perkLines(p: Perks): List<String> = buildList {
+    if (p.firstPingDelayMs > 0) add("Second ping delayed ${p.firstPingDelayMs / GameRules.MINUTE} min")
+    if (p.identityDelayPings > 0) add("Identity hidden ${p.identityDelayPings} extra pings")
+    if (p.proximityAlertM > 0) add("Alerted to intruders within ${p.proximityAlertM.toInt()} m")
+    if (p.bleWindowBonusMs > 0) add("Tag window +${p.bleWindowBonusMs / 1000} s")
+    if (p.decoysPerGame > 0) add("${p.decoysPerGame} decoy pings per game")
+    if (isEmpty()) add("No advantages yet.")
 }

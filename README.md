@@ -18,6 +18,36 @@ A city, cut in half. Two teams. Seven days. One photograph ends it.
 
 Every photo is also checked for freshness (2 min), and its EXIF location against the phone's live fused fix (60 m) to catch doctored metadata.
 
+## Points and levels
+
+Every verified event writes an `Award` to a ledger. Levels, perks and both leaderboards derive from it (`rules/Progression.kt`, `rules/Leaderboard.kt`).
+
+| Event | Points |
+|---|---|
+| Jail an opponent | `10 × (1 + 0.2 × their level)`, once per target per round |
+| Jailed | −5 |
+| Capture the flag | 100 |
+| Team wins (capture or enemy forfeit) | 25 each |
+| Tie | 5 each |
+| Leader whose flag survived a win or tie | 15 |
+| Get home from an incursion unjailed | 2 per ping endured |
+
+**Levels** are unlimited. Level *L* needs `50 × (L−1)^2.5` lifetime points, so every level costs more than the last.
+
+**Advantages** unlock at milestone levels 2, 6, 12, 20, 30, 42… (tier *t* at `t(t+1)`); the gaps widen and every tier strengthens every perk:
+
+| Perk | Per tier | Cap |
+|---|---|---|
+| Second incursion ping delayed | +5 min | 60 min |
+| Identity hidden longer | +1 ping every 2 tiers | none |
+| Alerted to intruders nearby, regardless of the random third | +250 m radius | 5 km |
+| Wider BLE tag window | +15 s | +5 min |
+| Decoy pings (fake anonymous ping from enemy ground) | +1 every 3 tiers | none |
+
+Caps sit only where an uncapped value would break the game. Level is snapshotted when teams are dealt and holds for the round.
+
+**Rankings** are global (lifetime points) and per city (points earned there). Both show lifetime level. Ties share a rank.
+
 ## Structure
 
 ~~~
