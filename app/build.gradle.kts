@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace = "com.hereliesaz.templateapp"
+    namespace = "com.hereliesaz.capturetheflag"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.hereliesaz.templateapp"
+        applicationId = "com.hereliesaz.capturetheflag"
         minSdk = 28
         targetSdk = 37
         versionCode = 1
-        versionName = "1.0.0"
+        versionName = "0.1.0"
     }
 
     buildFeatures {
@@ -25,11 +25,17 @@ android {
 }
 
 dependencies {
+    implementation(project(":shared"))
+
     val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
     implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
+    implementation("com.google.android.gms:play-services-location:21.4.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.11.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
