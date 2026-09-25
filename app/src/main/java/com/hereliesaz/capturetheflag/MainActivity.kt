@@ -9,18 +9,31 @@ import com.hereliesaz.capturetheflag.data.OnboardedDirectory
 import com.hereliesaz.capturetheflag.data.InMemoryBackend
 import com.hereliesaz.capturetheflag.onboarding.CityOnboarding
 import com.hereliesaz.capturetheflag.onboarding.OpenData
+import androidx.lifecycle.lifecycleScope
+import com.hereliesaz.capturetheflag.data.GameBackend
+import com.hereliesaz.capturetheflag.net.NodeBackend
+import com.hereliesaz.capturetheflag.net.RelayClient
 import com.hereliesaz.capturetheflag.platform.AndroidPlatformServices
+import com.hereliesaz.capturetheflag.platform.Identity
+import kotlinx.coroutines.launch
 import com.hereliesaz.capturetheflag.ui.App
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val platform = AndroidPlatformServices(this)
-        // TODO: swap for the networked backend once chosen; the in-memory one is single-device.
-        // City data is gathered on first registration from open data (OpenStreetMap, WorldPop).
-        val open = OpenData()
-        val cities = OnboardedDirectory(CityOnboarding(open.boundaries, open.population, open.features))
-        val backend = InMemoryBackend(cities, System::currentTimeMillis)
+        val identity = Identity(this)
+        // On a node: the real, networked game. Without one: the built-in single-phone test server,
+        // which gathers city data itself from open data (OpenStreetMap, WorldPop).
+        val backend: GameBackend = identity.node?.let { url ->
+            NodeBackend(identity.keys, RelayClient.open(url, lifecycleScope), lifecycleScope).also { node ->
+                identity.profile?.let { (name, selfie) -> lifecycleScope.launch { node.register(name, selfie) } }
+                lifecycleScope.launch { node.me.collect { u -> u?.let { identity.profile = it.displayName to (it.selfieUrl ?: "") } } }
+            }
+        } ?: run {
+            val open = OpenData()
+            InMemoryBackend(OnboardedDirectory(CityOnboarding(open.boundaries, open.population, open.features)), System::currentTimeMillis)
+        }
 
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}.launch(
             arrayOf(
@@ -34,6 +47,11 @@ class MainActivity : ComponentActivity() {
             ),
         )
 
-        setContent { App(backend, platform, System::currentTimeMillis) }
+        setContent {
+            App(backend, platform, System::currentTimeMillis, node = identity.node) { url ->
+                identity.node = url
+                recreate()
+            }
+        }
     }
 }

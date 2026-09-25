@@ -66,16 +66,19 @@ import com.hereliesaz.capturetheflag.rules.Verdict
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** Root. Registration → city → game. */
+/**
+ * Root. Registration → city → game. [node] is the node being played on, null for the built-in
+ * test server; [onNode] switches (the app restarts on the new one).
+ */
 @Composable
-fun App(backend: GameBackend, platform: PlatformServices, clock: () -> Millis) = CtfTheme {
+fun App(backend: GameBackend, platform: PlatformServices, clock: () -> Millis, node: String? = null, onNode: (String?) -> Unit = {}) = CtfTheme {
     val me by backend.me.collectAsState()
     var city by remember { mutableStateOf<String?>(null) }
     Scaffold { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
             when {
                 me == null -> RegisterScreen(backend, platform)
-                city == null -> CityScreen(backend) { city = it }
+                city == null -> CityScreen(backend, node, onNode) { city = it }
                 else -> GameScreen(backend, platform, clock, city!!) { city = null }
             }
         }
@@ -103,7 +106,7 @@ private fun RegisterScreen(backend: GameBackend, platform: PlatformServices) {
 }
 
 @Composable
-private fun CityScreen(backend: GameBackend, onPicked: (String) -> Unit) {
+private fun CityScreen(backend: GameBackend, node: String?, onNode: (String?) -> Unit, onPicked: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -125,6 +128,22 @@ private fun CityScreen(backend: GameBackend, onPicked: (String) -> Unit) {
         }) { Text("Enter") }
         busy?.let { OnboardingProgress(backend, it) }
         error?.let { Text(it) }
+        NodePicker(node, onNode)
+    }
+}
+
+/** Where the game is played: a node (the real thing) or the built-in test server (this phone only). */
+@Composable
+private fun NodePicker(node: String?, onNode: (String?) -> Unit) {
+    var url by remember { mutableStateOf(node ?: "") }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(if (node == null) "Playing on this phone only (test)." else "Playing on $node", fontWeight = FontWeight.Bold)
+        OutlinedTextField(url, { url = it }, label = { Text("Node address (wss://…)") }, singleLine = true)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // wss only: Android refuses unencrypted connections, and so should we.
+            OutlinedButton(enabled = url.trim().startsWith("wss://"), onClick = { onNode(url.trim()) }) { Text("Use this node") }
+            if (node != null) OutlinedButton(onClick = { onNode(null) }) { Text("Test on this phone") }
+        }
     }
 }
 
