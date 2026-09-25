@@ -9,8 +9,7 @@ import kotlin.math.roundToLong
 
 /**
  * Door-to-door travel time by the best of walking and public transit, departing at [departAt].
- * Production implementations call a routing service server-side (Google Routes transit mode,
- * OpenTripPlanner over the city's GTFS feed) so schedules, frequency and night service count.
+ * A general estimate, not a live route: players need a fair deadline, not a timetable.
  */
 fun interface TravelTimeEstimator {
     suspend fun travelMs(from: GeoPoint, to: GeoPoint, departAt: Millis): Long
@@ -22,7 +21,7 @@ fun interface WeatherFactor {
 }
 
 /**
- * Offline fallback: straight-line distance with a detour factor, taking the faster of walking
+ * The estimate in use: straight-line distance with a detour factor, taking the faster of walking
  * (5 km/h) and transit (18 km/h in-vehicle plus a 10 minute wait and 5 minute walk).
  */
 object HeuristicTravel : TravelTimeEstimator {

@@ -31,7 +31,7 @@ Jail is conceptual, but the report is not.
 6. **Parole** (perk) only applies once the prisoner has reported.
 7. **Final whistle.** The freeze lifts at the end of the round, so reported prisoners share in the win or tie. The disqualified do not.
 
-Travel time comes from `TravelTimeEstimator` and `WeatherFactor` (`data/TravelTime.kt`). `HeuristicTravel` is an offline stand-in (5 km/h walking vs. 18 km/h transit with a 15 min overhead, 1.3× detour); production should call a routing service server-side (Google Routes transit, OpenTripPlanner on the city's GTFS) and a weather API.
+Travel time is a general estimate, not a live route (`HeuristicTravel` in `data/TravelTime.kt`): straight-line distance × 1.3 for detours, then the faster of walking at 5 km/h or transit at 18 km/h plus 15 min of waiting and walking. `WeatherFactor` scales it for conditions.
 
 ## Points and levels
 
@@ -116,7 +116,7 @@ Each phone advertises a server-issued token that rotates every 15 minutes over B
 
 - **Backend.** `InMemoryBackend` is single-device, for development only. Needs a real server (Firebase, Supabase, Ktor…) running `GameEngine`.
 - **City data.** `CityDataSource` needs real feeds: census population, OSM buildings/land/water, barrier features. `DemoCityDirectory` is a synthetic New Orleans.
-- **Routing and weather.** `HeuristicTravel` and `NoWeather` are stand-ins until a routing service and weather API are chosen.
+- **Weather.** `NoWeather` is a stand-in until a weather source is chosen.
 - **Flag forfeit detection.** How a moved flag is detected (periodic re-photo, challenge by opponents, moderation) is not yet specified. `GameEngine.forfeit` is the hook.
 - **Camera EXIF.** Many stock cameras strip GPS unless location tagging is turned on. An in-app CameraX capture would remove that dependency.
 - **Background location** permission needs its own settings-screen request on Android 11+.
