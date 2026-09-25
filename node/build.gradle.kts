@@ -14,6 +14,8 @@ dependencies {
     implementation("io.ktor:ktor-server-core:3.6.0")
     implementation("io.ktor:ktor-server-netty:3.6.0")
     implementation("io.ktor:ktor-server-websockets:3.6.0")
+    // Offline speech recognition, for hearing the challenge in stream audio.
+    implementation("com.alphacephei:vosk:0.3.45")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("fr.acinq.secp256k1:secp256k1-kmp:0.24.0")

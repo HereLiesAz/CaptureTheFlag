@@ -22,6 +22,7 @@ import java.io.File
  * PORT=7447 DATA_DIR=./node-data ARCHIVE=/path/to/private-repo-clone ./gradlew :node:run
  * PORT=7447 DATA_DIR=./node-data ARCHIVE=~/GoogleDrive/ctf-archive ARCHIVE_SYNC=external ./gradlew :node:run
  * REFEREES=<pubkey>,<pubkey>,... ./gradlew :node:run     # the shared referee roster
+ * VOSK_MODEL=/path/to/vosk-model-small-en-us-0.15 ...    # hear the challenge (needs ffmpeg)
  * ~~~
  */
 fun main() = runBlocking {
@@ -42,7 +43,9 @@ fun main() = runBlocking {
     // Every node must list the same roster: panels are drawn from it. Alone, a node is its own panel of one.
     val roster = System.getenv("REFEREES")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)?.plus(keys.pub)?.distinct() ?: listOf(keys.pub)
     val media = MediaStore(File(dir, "media"))
-    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::read))
+    // VOSK_MODEL: a Vosk model directory (alphacephei.com/vosk/models), for hearing the challenge. Needs ffmpeg.
+    val ears = System.getenv("VOSK_MODEL")?.let { VoskEars(File(it)) }
+    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::read, ears = ears))
     referee.restore()
 
     println("node ${keys.pub} on ws://0.0.0.0:$port/ (media at /media/) with ${store.size()} events" + (archive?.let { ", archiving to ${it.root}" } ?: ""))

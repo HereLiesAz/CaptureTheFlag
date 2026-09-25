@@ -19,16 +19,18 @@ import com.hereliesaz.capturetheflag.net.ReviewReport.Result
  *
  * [matcher] scores the final still against the leader's registration photo, when this node
  * runs one. [media] is this node's store: the stream's segments are checked against the hashes
- * sent live. Hearing the challenge on the audio still needs speech recognition.
+ * sent live. [ears] listens for the challenge in the audio, on a node with a speech model.
  */
 class StreamJudge(
     private val referee: String,
     private val matcher: PhotoMatcher? = null,
     /** This node's media store, by hash. */
     private val media: (String) -> ByteArray? = { null },
+    /** Speech recognition, for the challenge. Null on a node without a speech model. */
+    private val ears: Ears? = null,
 ) {
     suspend fun review(g: Game, s: LiveStream): ReviewReport {
-        val checks = listOf(continuity(s), liveInTime(s), challengeTiming(s), finalStill(g, s), visualMatch(g, s), heard(), integrity(s))
+        val checks = listOf(continuity(s), liveInTime(s), challengeTiming(s), finalStill(g, s), visualMatch(g, s), heard(s), integrity(s))
         return ReviewReport(s.id, s.review, referee, checks.none { it.result == Result.FAIL }, checks)
     }
 
@@ -93,7 +95,22 @@ class StreamJudge(
         return Check("Matches the registration photo", if (ok) Result.PASS else Result.FAIL, "Similarity %.2f; %.2f needed".format(score, GameRules.VISUAL_MATCH_MIN))
     }
 
-    private fun heard() = Check("Challenge heard on the audio", Result.NOT_RUN, "This node runs no speech recognition yet")
+    /**
+     * The challenge, listened for in the footage after the winning frame: the last segments of
+     * the referees' footage, which ends [GameRules.STREAM_CHALLENGE_WINDOW] after it.
+     */
+    private suspend fun heard(s: LiveStream): Check {
+        val name = "Challenge heard on the audio"
+        val words = s.challenge?.split(' ')?.filter { it.isNotBlank() } ?: return Check(name, Result.FAIL, "No challenge was issued")
+        val e = ears ?: return Check(name, Result.NOT_RUN, "This node has no speech model")
+        val window = (GameRules.STREAM_CHALLENGE_WINDOW / SEGMENT_MS + 2).toInt()
+        val wanted = s.chunks.takeLast(window)
+        val segments = wanted.mapNotNull { media(it) }
+        if (segments.size < wanted.size) return Check(name, Result.NOT_RUN, "${wanted.size - segments.size} of ${wanted.size} segments around the winning frame aren't on this node")
+        val h = e.heard(segments, words) ?: return Check(name, Result.NOT_RUN, "The audio couldn't be read")
+        return Check(name, if (h.said) Result.PASS else Result.FAIL,
+            if (h.said) "Heard \"${s.challenge}\"" else "Listened for \"${s.challenge}\"; heard ${h.transcript.ifBlank { "neither word" }.let { "\"$it\"" }}")
+    }
     /**
      * Every segment the phone reported live, fetched and hashed again. The store names files by
      * their hash, so a segment that's here is the segment that was reported; one that isn't may
@@ -107,5 +124,10 @@ class StreamJudge(
             0 -> Check("Video matches the live hashes", Result.NOT_RUN, "None of the ${s.chunks.size} segments reached this node")
             else -> Check("Video matches the live hashes", Result.NOT_RUN, "$here of ${s.chunks.size} segments reached this node; the rest may be on another")
         }
+    }
+
+    private companion object {
+        /** How long a phone's segments run: see the app's live camera. */
+        const val SEGMENT_MS = 5_000L
     }
 }
