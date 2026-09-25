@@ -79,6 +79,7 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
     override fun stopProximity() = proximity.stop()
     override fun startTracking(cityName: String) { TrackingService.start(activity) }
     override fun stopTracking() { TrackingService.stop(activity) }
+    override fun showLiveFeed(lines: List<String>) = RadioNotification.post(activity, lines)
 
     @Composable
     override fun Portrait(uri: String?, modifier: Modifier) {

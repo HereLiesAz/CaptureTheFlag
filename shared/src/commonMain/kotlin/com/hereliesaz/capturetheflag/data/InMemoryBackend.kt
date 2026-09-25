@@ -3,6 +3,10 @@ package com.hereliesaz.capturetheflag.data
 import com.hereliesaz.capturetheflag.chat.Channel
 import com.hereliesaz.capturetheflag.chat.ChatAccess
 import com.hereliesaz.capturetheflag.chat.ChatMessage
+import com.hereliesaz.capturetheflag.commentary.Career
+import com.hereliesaz.capturetheflag.commentary.Commentary
+import com.hereliesaz.capturetheflag.commentary.Commentator
+import com.hereliesaz.capturetheflag.commentary.HeadToHead
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.engine.Transition
 import com.hereliesaz.capturetheflag.geo.GeoPoint
@@ -11,6 +15,8 @@ import com.hereliesaz.capturetheflag.model.Award
 import com.hereliesaz.capturetheflag.model.City
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
+import com.hereliesaz.capturetheflag.model.Highlight
+import com.hereliesaz.capturetheflag.model.HighlightKind
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.Millis
@@ -78,10 +84,62 @@ class InMemoryBackend(
         val result = t(ticked.game)
         result.pings.forEach { pingBus.tryEmit(it) }
         _ledger.update { it + ticked.awards + result.awards }
+        _highlights.update { it + ticked.highlights + result.highlights }
         (ticked.notices + result.notices).forEach { announce(flow.value?.city ?: g.city, it) }
         flow.value = result.game
+        broadcast(city, g, result.game, ticked.awards + result.awards, ticked.notices + result.notices, ticked.highlights + result.highlights)
         return result.verdict
     }
+
+    private val _highlights = MutableStateFlow<List<Highlight>>(emptyList())
+    override val highlights: StateFlow<List<Highlight>> = _highlights.asStateFlow()
+
+    /** Finished rounds in which [id] made a Mosts list: the only rounds the booth may dig into. */
+    private fun listedIn(id: PlayerId): Set<String> =
+        _highlights.value.filter { it.kind == HighlightKind.MADE_LIST && it.user == id }.map { it.game }.toSet() - liveGames()
+
+    private fun liveGames() = games.values.mapNotNull { it.value?.takeIf { g -> g.phase !is GamePhase.Ended }?.id }.toSet()
+    private fun cityLabel(id: String) = games.values.mapNotNull { it.value?.city }.firstOrNull { it.id == id }?.name
+        ?: id.replaceFirstChar { c -> c.uppercase() }
+
+    private val booth = Commentator(
+        random = random,
+        career = { id -> Career.from(_ledger.value, id, liveGames(), ::cityLabel) },
+        // Rivalries only from rounds where both made a Mosts list.
+        rivalry = { a, b ->
+            val shared = listedIn(a) intersect listedIn(b)
+            HeadToHead.between(_ledger.value.filter { it.game in shared }, a, b)
+        },
+        // Finished rounds where they made a Mosts list only. The round in play stays secret.
+        antics = { id -> listedIn(id).let { ok -> _highlights.value.filter { it.user == id && it.game in ok } } },
+        listed = { id, game -> game in listedIn(id) },
+        nameOf = { id -> users[id]?.displayName },
+        cityName = ::cityLabel,
+    )
+    private val feeds = mutableMapOf<String, MutableStateFlow<List<Commentary>>>()
+    private val lastLook = mutableMapOf<String, Millis>()
+
+    private fun feed(city: String) = feeds.getOrPut(city.lowercase()) { MutableStateFlow(emptyList()) }
+
+    /** Narrates the change, or fills a long silence with colour commentary. */
+    private fun broadcast(
+        city: String,
+        before: Game?,
+        after: Game,
+        awards: List<Award>,
+        notices: List<String>,
+        highlights: List<Highlight> = emptyList(),
+    ) {
+        val now = clock()
+        val key = city.lowercase()
+        var lines = booth.narrate(before, after, awards, notices, now, lastLook[key], highlights)
+        lastLook[key] = now
+        val last = feed(city).value.lastOrNull()?.at ?: 0L
+        if (lines.isEmpty() && now - last >= LULL) lines = listOfNotNull(booth.lull(after, now))
+        if (lines.isNotEmpty()) feed(city).update { (it + lines).takeLast(FEED_LENGTH) }
+    }
+
+    override fun commentary(cityName: String): StateFlow<List<Commentary>> = feed(cityName).asStateFlow()
 
     override suspend fun register(displayName: String, selfieUri: String): User =
         User("u-${random.nextLong().toULong().toString(36)}", displayName, selfieUri)
@@ -93,12 +151,13 @@ class InMemoryBackend(
             val ticked = engine.tick(current, clock())
             _ledger.update { it + ticked.awards }
             val t = ticked.game
+            broadcast(cityName, current, t, ticked.awards, ticked.notices)
             if (t.phase !is GamePhase.Ended) return t.also { flow.value = it }
         }
         val (city, cells) = directory.resolve(cityName) ?: error("Unknown city: $cityName")
         val line = partitioner.partition(cells, random).line
         return engine.newRound("g-${random.nextLong().toULong().toString(36)}", city, Territory(city, line, cells), clock())
-            .also { flow.value = it }
+            .also { broadcast(cityName, flow.value, it, emptyList(), emptyList()); flow.value = it }
     }
 
     override fun game(cityName: String): StateFlow<Game?> = slot(cityName).asStateFlow()
@@ -150,7 +209,7 @@ class InMemoryBackend(
     override suspend fun interrogate(cityName: String, subject: PlayerId) =
         apply(cityName) { engine.interrogate(it, myId(), subject, clock()) }
 
-    override suspend fun vanish(cityName: String) = apply(cityName) { engine.vanish(it, myId()) }
+    override suspend fun vanish(cityName: String) = apply(cityName) { engine.vanish(it, myId(), clock()) }
 
     override suspend fun bounty(cityName: String, target: PlayerId) = apply(cityName) { engine.bounty(it, myId(), target) }
 
@@ -181,6 +240,12 @@ class InMemoryBackend(
         val msg = ChatMessage("m-${random.nextLong().toULong().toString(36)}", channel.key, me.id, me.displayName, body.trim(), clock())
         threads.getOrPut(channel.key) { MutableStateFlow(emptyList()) }.update { it + msg }
         return Verdict.Valid
+    }
+
+    private companion object {
+        /** Colour commentary after this long without a line. */
+        const val LULL = GameRules.HOUR
+        const val FEED_LENGTH = 200
     }
 }
 

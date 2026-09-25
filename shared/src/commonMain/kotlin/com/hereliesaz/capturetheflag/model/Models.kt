@@ -198,6 +198,8 @@ data class Game(
     val signups: List<User> = emptyList(),
     val flags: Map<Team, Flag> = emptyMap(),
     val jails: Map<Team, Jail> = emptyMap(),
+    /** What each player has done this round. Feeds MVPs and the Mosts. */
+    val stats: Map<PlayerId, RoundStats> = emptyMap(),
     /** Net points each player has earned this round. Zeroed on disqualification. */
     val earned: Map<PlayerId, Long> = emptyMap(),
     val lastFix: Map<PlayerId, LocationFix> = emptyMap(),
@@ -229,4 +231,66 @@ data class Award(
     val points: Long,
     val reason: String,
     val at: Millis,
+)
+
+/** What kind of moment a [Highlight] records. */
+enum class HighlightKind {
+    /** A tag attempt on an opponent that failed its checks. [Highlight.other] is the target. */
+    NEAR_MISS,
+    /** A tag thrown out by Last Stand. [Highlight.user] made the stand, [Highlight.other] took the photo. */
+    LAST_STAND,
+    /** A decoy sent. [Highlight.value] is how many extra waypoints it walked. Secret until the round ends. */
+    DECOY,
+    /** A scheduled ping swallowed. Secret until the round ends. */
+    VANISH,
+    /** A forced private ping. [Highlight.other] is the intruder. Secret until the round ends. */
+    INTERROGATION,
+    /** A tag paid out on a Bounty. [Highlight.other] is the prisoner, [Highlight.value] the multiplier ×10. */
+    BOUNTY_COLLECTED,
+    /** A jail report completed. [Highlight.value] is seconds to spare before the deadline. */
+    REPORTED,
+    /** A breakout abandoned. [Highlight.value] is minutes held before leaving. */
+    BREAKOUT_ABANDONED,
+    /** Released by Parole. */
+    PAROLE,
+    /** A Tripwire alarm. [Highlight.user] is the defender, [Highlight.other] the intruder. Secret until the round ends. */
+    TRIPWIRE,
+    /**
+     * Made a Mosts list when the round ended. [Highlight.note] is the title, [Highlight.value] the rank.
+     * Only players who made a list in a round may have that round's antics and rivalries aired later.
+     */
+    MADE_LIST,
+}
+
+/**
+ * A moment worth remembering that the points ledger does not capture. Kept for good, so the
+ * booth can bring it up in later rounds. [secret] moments must not be aired while their round
+ * is still being played.
+ */
+data class Highlight(
+    val kind: HighlightKind,
+    val user: PlayerId,
+    val other: PlayerId? = null,
+    val game: GameId,
+    val city: CityId,
+    val at: Millis,
+    val value: Int = 0,
+    val note: String? = null,
+) {
+    val secret: Boolean get() = kind in setOf(HighlightKind.DECOY, HighlightKind.VANISH, HighlightKind.INTERROGATION, HighlightKind.TRIPWIRE)
+}
+
+/** One player's round, counted as it happens. */
+data class RoundStats(
+    val tags: Int = 0,
+    val timesJailed: Int = 0,
+    /** Pings endured across every incursion survived. */
+    val pingsSurvived: Int = 0,
+    /** Most pings endured in a single incursion survived. */
+    val deepest: Int = 0,
+    val freed: Int = 0,
+    val nearMisses: Int = 0,
+    /** Fewest seconds to spare on a jail check-in; null if never checked in. */
+    val closestReportSec: Int? = null,
+    val bountiesCashed: Int = 0,
 )

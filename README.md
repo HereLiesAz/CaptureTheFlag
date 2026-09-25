@@ -23,6 +23,22 @@ Every photo is also checked for freshness (2 min), and its EXIF location against
 
 A rules panel sits above every tab and shows only what applies to the player right now (`rules/Briefing.kt`): sign-up, leader or follower during placement, home ground, enemy ground (with the next ping and when identity is revealed), breaking out, en route to jail, frozen, disqualified, or spectating. Everything else stays hidden.
 
+## Radio
+
+A live play-by-play in a radio sportscaster's voice (`commentary/Commentator.kt`), in the Radio tab, as a one-line ticker above every tab, and as an ongoing notification (shared with the location service's, so there is only ever one).
+
+It narrates as it happens, by name and by the minute: who crossed and how long they've been over, the ping that gives them away, check-ins, breakout attempts starting and failing, tags with the report deadline, jailbreaks naming who walked, captures, the clock at 24 h and 1 h, and colour commentary after an hour of quiet.
+
+It reads the play and guesses intent (`speculation`): an intruder steadily closing on the enemy flag ("my gut says they're hunting the flag"), drifting toward a jail with teammates inside ("that's a rescue run"), or backing off. It reads the hunters too: a defender who has had the pings on an intruder and keeps closing is called as a hunt. Guesses compare distances over time and say what someone wants, never where they are.
+
+Rivalries come from shared history (`commentary/Rivalry.kt`): every tag pairs a tagger with a prisoner on the ledger, so the booth knows who has jailed whom, how often, and who's ahead. It calls the score on a tag ("leads that rivalry 3 to 1 now", "that squares it"), flags a nemesis when an old rival crosses into their territory, and turns a hunt between two rivals into a grudge match.
+
+It brings up careers (`commentary/Career.kt`, read off the ledger): rookies, past captures and where, career tags, longest survival, biggest breakout, disqualifications, wins, high levels, winning and losing streaks, and how fast someone has climbed (or hasn't). Sometimes, not every line. Level-ups are called live as points land, with the big call when a milestone brings a new advantage.
+
+**Highlights log.** The engine records the moments the points ledger can't (`Highlight` in `model/Models.kt`): near misses, Last Stands, decoys and how far they walked, vanishes, interrogations, bounties cashed, jail check-ins and how close to the deadline, abandoned breakouts, paroles, tripwires. The backend keeps them for good. Live, the booth calls the public ones (a missed shot, a check-in with seconds to spare, a bounty cashed). Decoys, vanishes, interrogations and tripwires are secret: never aired during their round, fair game in every round after. From past rounds (only those where the player made a Mosts list) it tells stories ("who once walked a decoy 6 blocks through Chicago") and folds them into rivalries ("Remember Memphis? Name2 made a Last Stand and threw Name4's photo right out").
+
+What it never says: coordinates, distances, the flag's venue or address.
+
 ## Jail
 
 Jail is conceptual, but the report is not.
@@ -52,6 +68,8 @@ Every verified event writes an `Award` to a ledger. Levels, perks and both leade
 | Get home from an incursion unjailed | 2 per ping endured |
 | Jailbreak | 20 per teammate freed |
 | Disqualified | the round's net points, removed |
+| Team MVP | 30 |
+| Each Most held | 5 to 20 (below) |
 
 **Levels** are unlimited. Level *L* needs `50 × (L−1)^2.5` lifetime points, so every level costs more than the last.
 
@@ -94,6 +112,25 @@ When hiding meets hunting, the higher level wins; ties go to the hunter. Blur yi
 Level is snapshotted when teams are dealt and holds for the round.
 
 **Rankings** are global (lifetime points) and per city (points earned there). Both show lifetime level. Ties share a rank.
+
+## Honors
+
+Held live, paid at the final whistle, shown in the Status tab and called on the radio the moment they change hands (`rules/Honors.kt`). Ties share. The disqualified hold nothing.
+
+**Team MVP** (+30): most points earned this round, counting the outcome's own points so a capture weighs in. Ties go to more tags, then more freed.
+
+| Most | For | Bonus |
+|---|---|---|
+| The Collector | most tags | 20 |
+| The Locksmith | most teammates freed | 20 |
+| Most Wanted | most pings endured and survived | 15 |
+| Deep Cover | longest single incursion survived | 15 |
+| Bounty Hunter | most bounties cashed | 15 |
+| Photo Finish | closest jail check-in | 10 |
+| Frequent Flyer | most times jailed | 5 |
+| Almost | most shots that didn't count | 5 |
+
+Each list shows the top three. Making a list is what makes a round memorable: at the whistle the engine logs who made which list, and in later rounds the booth may only air a player's antics from rounds where they made one, and a rivalry only from rounds where both did.
 
 ## Structure
 

@@ -1,9 +1,6 @@
 package com.hereliesaz.capturetheflag.platform
 
 import android.annotation.SuppressLint
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -36,7 +33,7 @@ class TrackingService : Service() {
 
     @SuppressLint("MissingPermission")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        startForeground(RadioNotification.ID, RadioNotification.build(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         client.requestLocationUpdates(
             LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 15_000).setMinUpdateIntervalMillis(5_000).build(),
             callback,
@@ -50,20 +47,7 @@ class TrackingService : Service() {
         super.onDestroy()
     }
 
-    private fun notification(): Notification {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Live game", NotificationManager.IMPORTANCE_LOW))
-        return Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle("Capture the Flag")
-            .setContentText("You are on the map. So is everyone else.")
-            .setOngoing(true)
-            .build()
-    }
-
     companion object {
-        private const val ID = 7
-        private const val CHANNEL = "live-game"
         fun start(c: Context) = c.startForegroundService(Intent(c, TrackingService::class.java))
         fun stop(c: Context) = c.stopService(Intent(c, TrackingService::class.java))
     }

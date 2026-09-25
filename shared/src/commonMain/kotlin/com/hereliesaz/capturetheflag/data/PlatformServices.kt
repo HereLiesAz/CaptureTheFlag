@@ -25,6 +25,9 @@ interface PlatformServices {
     fun startTracking(cityName: String)
     fun stopTracking()
 
+    /** Keeps an ongoing notification showing the newest play-by-play, newest first. Empty clears it. */
+    fun showLiveFeed(lines: List<String>)
+
     /** Renders a selfie or photo from a URI this platform produced. */
     @Composable
     fun Portrait(uri: String?, modifier: Modifier)
