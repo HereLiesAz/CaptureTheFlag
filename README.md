@@ -19,6 +19,19 @@ A city, cut in half. Two teams. Seven days. One photograph ends it.
 
 Every photo is also checked for freshness (2 min), and its EXIF location against the phone's live fused fix (60 m) to catch doctored metadata.
 
+## City onboarding
+
+The first time anyone registers in a city, it gets surveyed (`onboarding/`). Everyone after that plays on the stored result, and concurrent first requests share one run. The player who triggers it watches the stages on the city screen.
+
+1. **City limits** from OpenStreetMap via Nominatim (largest outer ring of the administrative boundary).
+2. **Grid**: about 150 square cells, 300 m to 3 km a side depending on city size, kept where the centre is inside the limits.
+3. **People** per cell from WorldPop's 100 m global population grid.
+4. **Buildings** per cell from OpenStreetMap via Overpass.
+5. **Water** (lakes, riverbanks, bays) and **barriers** (rivers 1.0, motorways 0.8, canals 0.7, rail 0.6, trunk roads 0.5) fetched once for the city and measured into each cell.
+6. The partitioner then splits it, as before.
+
+Local time for night perks is estimated from longitude. The services are free and ask for polite use: requests identify the app and run at most four at a time. This belongs on the server once there is one; for now the device does it.
+
 ## Briefing
 
 A rules panel sits above every tab and shows only what applies to the player right now (`rules/Briefing.kt`): sign-up, leader or follower during placement, home ground, enemy ground (with the next ping and when identity is revealed), breaking out, en route to jail, frozen, disqualified, or spectating. Everything else stays hidden.
@@ -164,8 +177,7 @@ Each phone advertises a server-issued token that rotates every 15 minutes over B
 ## Open questions
 
 - **Backend.** `InMemoryBackend` is single-device, for development only. Needs a real server (Firebase, Supabase, Ktor…) running `GameEngine`.
-- **City data.** `CityDataSource` needs real feeds: census population, OSM buildings/land/water, barrier features. `DemoCityDirectory` is a synthetic New Orleans.
-- **Camera EXIF.** Many stock cameras strip GPS unless location tagging is turned on. An in-app CameraX capture would remove that dependency.
+- **Photo trust.** The in-app camera (`platform/CameraActivity.kt`) stamps GPS EXIF from a fresh fix at the shutter, so stock camera settings no longer matter. It also means EXIF and the device fix now come from the same source: a modified app could forge both. A real server should add device attestation (Play Integrity) to evidence.
 
 ## Stack
 

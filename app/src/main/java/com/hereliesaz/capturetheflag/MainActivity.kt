@@ -5,8 +5,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import com.hereliesaz.capturetheflag.data.DemoCityDirectory
+import com.hereliesaz.capturetheflag.data.OnboardedDirectory
 import com.hereliesaz.capturetheflag.data.InMemoryBackend
+import com.hereliesaz.capturetheflag.onboarding.CityOnboarding
+import com.hereliesaz.capturetheflag.onboarding.OpenData
 import com.hereliesaz.capturetheflag.platform.AndroidPlatformServices
 import com.hereliesaz.capturetheflag.ui.App
 
@@ -15,7 +17,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val platform = AndroidPlatformServices(this)
         // TODO: swap for the networked backend once chosen; the in-memory one is single-device.
-        val backend = InMemoryBackend(DemoCityDirectory, System::currentTimeMillis)
+        // City data is gathered on first registration from open data (OpenStreetMap, WorldPop).
+        val open = OpenData()
+        val cities = OnboardedDirectory(CityOnboarding(open.boundaries, open.population, open.features))
+        val backend = InMemoryBackend(cities, System::currentTimeMillis)
 
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}.launch(
             arrayOf(

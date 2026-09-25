@@ -13,6 +13,7 @@ import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import com.hereliesaz.capturetheflag.model.Ping
 import com.hereliesaz.capturetheflag.model.PlayerId
 import com.hereliesaz.capturetheflag.model.User
+import com.hereliesaz.capturetheflag.onboarding.Onboarding
 import com.hereliesaz.capturetheflag.rules.Verdict
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +32,9 @@ interface GameBackend {
     suspend fun requestCity(cityName: String): Game
 
     fun game(cityName: String): StateFlow<Game?>
+
+    /** Progress of a city's first-time setup, triggered by [requestCity] when nobody has played there yet. */
+    fun onboarding(cityName: String): StateFlow<Onboarding?>
 
     suspend fun join(cityName: String): Verdict
     suspend fun appointCoCaptains(cityName: String, picks: Set<PlayerId>): Verdict

@@ -51,6 +51,7 @@ import com.hereliesaz.capturetheflag.model.PingKind
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.model.Player
 import com.hereliesaz.capturetheflag.model.Role
+import com.hereliesaz.capturetheflag.onboarding.Onboarding
 import com.hereliesaz.capturetheflag.rules.Briefing
 import com.hereliesaz.capturetheflag.rules.GameRules
 import com.hereliesaz.capturetheflag.rules.Honors
@@ -103,18 +104,37 @@ private fun CityScreen(backend: GameBackend, onPicked: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf<String?>(null) }
     Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Title("PICK A CITY")
         Text("We cut it in half. Someone lives on the wrong side.")
-        OutlinedTextField(name, { name = it }, label = { Text("City or metro area") }, singleLine = true)
-        Button(enabled = name.isNotBlank(), onClick = {
+        OutlinedTextField(name, { name = it }, label = { Text("City or metro area") }, singleLine = true, enabled = busy == null)
+        Button(enabled = name.isNotBlank() && busy == null, onClick = {
+            val city = name.trim()
+            busy = city
+            error = null
             scope.launch {
-                runCatching { backend.requestCity(name.trim()) }
-                    .onSuccess { onPicked(name.trim()) }
+                runCatching { backend.requestCity(city) }
+                    .onSuccess { onPicked(city) }
                     .onFailure { error = it.message }
+                busy = null
             }
         }) { Text("Enter") }
+        busy?.let { OnboardingProgress(backend, it) }
         error?.let { Text(it) }
+    }
+}
+
+/** First player in a new city: they watch it being surveyed. Takes minutes, happens once. */
+@Composable
+private fun OnboardingProgress(backend: GameBackend, city: String) {
+    val state by backend.onboarding(city).collectAsState()
+    when (val s = state) {
+        is Onboarding.Working -> {
+            Text("Nobody has played $city yet. Surveying it now. This happens once.", style = MaterialTheme.typography.labelMedium)
+            Text(s.stage.label + if (s.of > 0) " · ${s.done} of ${s.of}" else "…")
+        }
+        else -> Text("…")
     }
 }
 
