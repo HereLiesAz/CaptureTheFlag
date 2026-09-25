@@ -1,0 +1,58 @@
+# Central workflow selection / request file.
+#
+# POLICY
+# - Do not add a new implementation under .github/workflows in this repository.
+# - New workflows are submitted to HereLiesAz/workflows first.
+# - A submitted workflow must be repository-agnostic: no repository names, package
+#   names, paths, branches, release names, or credentials may be hard-coded when
+#   they can be inputs/profile data.
+# - Reuse the existing central/target secret inventory whenever possible.
+# - If a genuinely new secret is required, declare its exact GitHub secret name
+#   and a plain-language purpose. Missing secret declarations are a policy error.
+#
+# CURRENT MENU
+# General:
+#   ci-validation            - build/test/validation
+#   codeql-scan              - CodeQL security scan
+#   issue-summary            - issue summarization
+#   jules-dispatch           - Jules request dispatch
+#   jules-glee               - Jules PR Glee audit
+#   jules-auto-assign        - Jules issue assignment
+#   context-backup           - repository context backup
+#   clear-cache              - cache cleanup
+#
+# Android:
+#   android-dependency-update - managed Android native dependency refresh
+#   android-github-release    - build/sign APK and publish GitHub release
+#   android-play-release      - build/sign AAB and publish to Google Play
+#
+# Releases / packages:
+#   artifact-github-release   - publish existing artifacts to GitHub Releases
+#   multi-platform-app-release- build/release a multi-platform application
+#   desktop-package           - native desktop packaging
+#   maven-package-publish     - Maven / GitHub Packages / JitPack-oriented publish
+#   node-package-publish      - Node package publishing
+#   azp-model-release         - managed model asset release
+#   azp-sign-release          - release signing
+#
+# Deployment:
+#   website-sftp-deploy       - build/deploy a website over SFTP
+#
+# Request catalog workflows here by slug. The controller is the authority; this
+# file is a repository-side declaration, not an executable workflow.
+requested:
+  - ci-validation
+  - codeql-scan
+  - android-dependency-update
+  - android-github-release
+
+# For a workflow that is not in the menu, describe the GENERAL capability needed.
+# Submit the implementation to HereLiesAz/workflows; do not implement it locally.
+new_workflow_request:
+  name: ""
+  purpose: ""
+  required_inputs: []
+  required_secrets:
+    # - name: EXAMPLE_SECRET
+    #   purpose: What service/API the credential authorizes and why the workflow needs it.
+    []
