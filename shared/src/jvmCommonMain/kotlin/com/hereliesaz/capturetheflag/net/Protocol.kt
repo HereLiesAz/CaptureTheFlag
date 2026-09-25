@@ -29,6 +29,12 @@ object Kinds {
     const val REPORT = 34006
     const val VIEW = 34007
     const val PUBLIC_VIEW = 34008
+    /** City chat: a plain public note, tagged `c`. */
+    const val NOTE = 1
+    /** Team room or DM: one copy per teammate, NIP-44 to each (tagged `p`). */
+    const val TEAM_CHAT = 36001
+    /** A player's profile: display name and selfie. */
+    const val PROFILE = 0
     const val RADIO = 35000
 }
 
@@ -109,9 +115,24 @@ data class Outcome(
     @Serializable data class AwardDto(val user: String, val points: Long, val reason: String)
 }
 
-/** Content of a kind-34002 ping, NIP-44 encrypted to its one recipient (tagged `p`). */
-@Serializable
-data class PingDto(val number: Int, val lat: Double, val lng: Double, val radius: Double, val kind: String)
+/**
+ * Content of a kind-34002 ping: a [com.hereliesaz.capturetheflag.model.Ping] as JSON, NIP-44 to
+ * its one recipient (tagged `p`), cut down to what that recipient may know. Until the intruder
+ * is identified, [com.hereliesaz.capturetheflag.model.Ping.subject] is an opaque per-game
+ * handle, not their key: enough to interrogate them, not enough to know who they are.
+ */
+object Pings {
+    fun encode(p: com.hereliesaz.capturetheflag.model.Ping) = Nostr.json.encodeToString(com.hereliesaz.capturetheflag.model.Ping.serializer(), p)
+    fun decode(s: String) = Nostr.json.decodeFromString(com.hereliesaz.capturetheflag.model.Ping.serializer(), s)
+}
+
+object Ble {
+    /** The token a player with key [k] advertises during rotation [window]: `HMAC(k, window)`, 8 bytes. */
+    fun token(k: ByteArray, window: Long): String {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256").apply { init(javax.crypto.spec.SecretKeySpec(k, "HmacSHA256")) }
+        return mac.doFinal(java.nio.ByteBuffer.allocate(8).putLong(window).array()).copyOf(8).toHex()
+    }
+}
 
 /**
  * A secret the referee holds during a round. [preimage] is canonical text (`lat,lng,photoHash`

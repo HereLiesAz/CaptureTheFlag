@@ -31,7 +31,10 @@ kotlin {
         // Both targets are JVMs, so it can use java.security; secp256k1 comes with each target's native half.
         val jvmCommonMain by creating {
             dependsOn(commonMain.get())
-            dependencies { api("fr.acinq.secp256k1:secp256k1-kmp:0.24.0") }
+            dependencies {
+                api("fr.acinq.secp256k1:secp256k1-kmp:0.24.0")
+                implementation("io.ktor:ktor-client-websockets:3.6.0")
+            }
         }
         androidMain.get().dependsOn(jvmCommonMain)
         jvmMain.get().dependsOn(jvmCommonMain)

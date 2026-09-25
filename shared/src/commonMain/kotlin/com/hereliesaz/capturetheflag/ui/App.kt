@@ -412,7 +412,8 @@ private fun ActTab(backend: GameBackend, platform: PlatformServices, g: Game, mi
                 }) { Text("Vanish: skip next ping ($vanishesLeft left)") }
                 val interrogationsLeft = perks.interrogationsPerGame - (g.interrogationsUsed[mine.id] ?: 0)
                 if (interrogationsLeft > 0) {
-                    pings.filter { it.kind == PingKind.INCURSION && it.subject in g.incursions }
+                    // Intruders you've been pinged about lately. If they've gone home, the interrogation says so.
+                    pings.filter { it.kind == PingKind.INCURSION && now - it.at < 30 * GameRules.MINUTE }
                         .distinctBy { it.subject }.forEach { p ->
                             OutlinedButton(onClick = { scope.launch { report(backend.interrogate(city, p.subject)) } }) {
                                 Text("Interrogate ${p.identified?.displayName ?: "intruder #${p.number}"} ($interrogationsLeft left)")

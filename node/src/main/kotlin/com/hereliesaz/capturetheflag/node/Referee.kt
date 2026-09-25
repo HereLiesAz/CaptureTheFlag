@@ -16,6 +16,9 @@ import com.hereliesaz.capturetheflag.rules.BleTokenRegistry
 import com.hereliesaz.capturetheflag.rules.CityPartitioner
 import com.hereliesaz.capturetheflag.rules.GameRules
 import com.hereliesaz.capturetheflag.rules.GameView
+import com.hereliesaz.capturetheflag.rules.Progression
+import com.hereliesaz.capturetheflag.model.Ping
+import com.hereliesaz.capturetheflag.model.PingKind
 import com.hereliesaz.capturetheflag.rules.Leaderboard
 import com.hereliesaz.capturetheflag.rules.Verdict
 import kotlinx.coroutines.sync.Mutex
@@ -209,7 +212,7 @@ class Referee(
         val share = myShare(r)
         if (live && keys.pub !in r.commits) {
             val deadline = r.open.created_at * 1000 + GameRules.SIGNUP_WINDOW
-            publish(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen(r.open.id, r.city, deadline, r.panel, Nostr.sha256(share).toHex())), r.id)
+            publish(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen(r.open.id, r.city, deadline, r.panel, Nostr.sha256(share).toHex())), r.id, listOf(listOf("c", r.city)))
         }
         // Nobody reveals until everyone has committed: nobody can pick a share after seeing others'.
         if (r.commits.size < r.panel.size) return
@@ -278,9 +281,8 @@ class Referee(
         )), r.id)
         if (!deliver) { r.uncommitted.clear(); return }
         for (p in total.pings) {
-            val body = Nostr.json.encodeToString(PingDto.serializer(), PingDto(p.number, p.location.lat, p.location.lng, p.radiusM, p.kind.toString()))
             // One event per recipient: nobody else can read it, and nobody else is named on it.
-            for (to in p.recipients) publish(Kinds.PING, Nip44.seal(body, keys, to), r.id, listOf(listOf("p", to)))
+            for (to in p.recipients) publish(Kinds.PING, Nip44.seal(Pings.encode(pingFor(r, p, to, total.game)), keys, to), r.id, listOf(listOf("p", to)))
         }
         for (s in r.uncommitted) publish(Kinds.COMMIT, Nostr.json.encodeToString(Commit.serializer(), Commit(s.what, s.who, s.team, s.commitment)), r.id)
         r.uncommitted.clear()
@@ -328,7 +330,7 @@ class Referee(
                 is Action.Tag -> engine.tag(g, who, a.target, a.photo.toModel(), now, ble(r), GameRules.HOUR)
                 is Action.Decoy -> engine.decoy(g, who, GeoPoint(a.lat, a.lng), now)
                 is Action.Vanish -> engine.vanish(g, who, now)
-                is Action.Interrogate -> engine.interrogate(g, who, a.subject, now)
+                is Action.Interrogate -> engine.interrogate(g, who, g.players.keys.firstOrNull { it == a.subject || handle(r, it) == a.subject } ?: a.subject, now)
                 is Action.Bounty -> engine.bounty(g, who, a.target)
             }
             else -> null
@@ -336,6 +338,20 @@ class Referee(
     }
 
     private fun Round.hold(s: Secret) { secrets += s; uncommitted += s }
+
+    /** An intruder's stand-in name until they're identified: stable for the game, meaningless outside it. */
+    private fun handle(r: Round, id: PlayerId) = "h-" + Nostr.sha256(r.seed!! + id.toByteArray()).toHex().take(16)
+
+    /** [p] as [to] may see it: their own copy, the subject a handle until identified, the level only with Keen Eye. */
+    private fun pingFor(r: Round, p: Ping, to: PlayerId, g: Game): Ping {
+        val keen = g.players[to]?.let { Progression.perksFor(it.level).keenEye } == true
+        return p.copy(
+            subject = if (p.identified != null || p.kind == PingKind.GO_LIVE) p.subject else handle(r, p.subject),
+            recipients = setOf(to),
+            subjectLevel = p.subjectLevel.takeIf { keen },
+            decoyRevealedTo = p.decoyRevealedTo.intersect(setOf(to)),
+        )
+    }
 
     /** A referee's vote, counted once per referee per review. A majority of the panel settles it. */
     private fun vote(r: Round, engine: GameEngine, g: Game, e: Event, now: Long): Transition? {
@@ -403,13 +419,5 @@ class Referee(
         const val TICK_MS = 60_000L
         /** A batch's time may be at most this far ahead of the endorser's own clock. */
         const val CLOCK_SKEW_MS = 30_000L
-    }
-}
-
-object Ble {
-    /** The token a player with key [k] advertises during rotation [window]. */
-    fun token(k: ByteArray, window: Long): String {
-        val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(k, "HmacSHA256")) }
-        return mac.doFinal(ByteBuffer.allocate(8).putLong(window).array()).copyOf(8).toHex()
     }
 }

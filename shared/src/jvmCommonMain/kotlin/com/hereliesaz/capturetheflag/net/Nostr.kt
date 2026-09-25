@@ -86,6 +86,17 @@ data class Filter(
             (until == null || e.created_at <= until) &&
             tags.all { (name, wanted) -> e.tags.any { it.size > 1 && it[0] == name && it[1] in wanted } }
 
+    /** The filter object for a REQ message. */
+    fun toJson(): kotlinx.serialization.json.JsonObject = kotlinx.serialization.json.buildJsonObject {
+        fun list(k: String, v: Collection<String>?) { if (v != null) put(k, JsonArray(v.map(::JsonPrimitive))) }
+        list("ids", ids); list("authors", authors)
+        kinds?.let { put("kinds", JsonArray(it.map(::JsonPrimitive))) }
+        tags.forEach { (name, values) -> list("#$name", values) }
+        since?.let { put("since", JsonPrimitive(it)) }
+        until?.let { put("until", JsonPrimitive(it)) }
+        limit?.let { put("limit", JsonPrimitive(it)) }
+    }
+
     companion object {
         /** Parses a filter object from a REQ message. */
         fun parse(o: kotlinx.serialization.json.JsonObject): Filter {
