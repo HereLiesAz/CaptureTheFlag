@@ -52,6 +52,24 @@ object Alerts {
         (after.phase as? GamePhase.Ended)?.takeIf { before.phase !is GamePhase.Ended }?.let { add("Game over" to "The round in ${after.city.name} has ended.") }
     }
 
+    /**
+     * Location lost on enemy ground: switched off, or no fix for [GameRules.LOCATION_LOST_WARNING].
+     * Says where they were last seen, what to do, and exactly what happens if they don't. Null
+     * when it doesn't apply. [lastFixAt] is the phone's own newest fix.
+     */
+    fun locationLost(game: Game, me: PlayerId?, lastFixAt: Millis?, locationOn: Boolean, now: Millis): Pair<String, String>? {
+        if (game.phase !is GamePhase.Active) return null
+        val p = me?.let { game.players[it] }?.takeIf { !it.isJailed } ?: return null
+        val seen = game.lastFix[p.id] ?: return null
+        if (game.territory.ownerOf(seen.point) != p.team.opponent) return null
+        val lost = !locationOn || lastFixAt == null || now - lastFixAt >= GameRules.LOCATION_LOST_WARNING
+        if (!lost) return null
+        val where = "%.5f, %.5f".fmt(seen.point.lat, seen.point.lng)
+        return "Location lost" to
+            "You were last seen on enemy ground at $where. ${if (!locationOn) "Turn location back on and go" else "Go"} back there until it returns. " +
+            "If you cross to your side without it, you'll be jailed where you were last seen."
+    }
+
     /** Warning when a prisoner's report deadline is this close. Scheduled by the screen, not by state changes. */
     const val DEADLINE_WARNING = 10 * GameRules.MINUTE
 }

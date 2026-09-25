@@ -202,7 +202,17 @@ private fun GameScreen(
     val locationOn by platform.locationOn.collectAsState()
     LaunchedEffect(locationOn) { if (!locationOn && mine != null) backend.locationOff(city) }
 
+    // Lost location on enemy ground: on screen for as long as it lasts, and one buzz when it starts.
+    val lost = Alerts.locationLost(g, me?.id, fix?.at, locationOn, now)
+    LaunchedEffect(lost != null) { lost?.let { (t, b) -> platform.alert(t, b) } }
+
     Column(Modifier.fillMaxSize()) {
+        lost?.let { (title, body) ->
+            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                Text(title.uppercase(), fontWeight = FontWeight.Bold)
+                Text(body, fontWeight = FontWeight.Bold)
+            }
+        }
         RulesPanel(Briefing.forPlayer(g, me?.id, now, fix?.let { g.territory.ownerOf(it.point) }))
         radio.lastOrNull()?.let { Ticker(it.text) { tab = Tab.RADIO } }
         Column(Modifier.weight(1f).padding(16.dp)) {
@@ -578,7 +588,7 @@ private fun countdown(ms: Long): String {
 private fun Long.pad() = toString().padStart(2, '0')
 
 /** Minimal multiplatform `%.5f` formatting. */
-private fun String.fmt(vararg xs: Double): String {
+internal fun String.fmt(vararg xs: Double): String {
     var i = 0
     return Regex("%\\.(\\d)f").replace(this) { mr ->
         val digits = mr.groupValues[1].toInt()

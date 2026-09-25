@@ -43,6 +43,8 @@ object GameRules {
      * while tracking; an ordinary signal gap is far shorter than any real crossing.
      */
     const val DARK_GAP = 2 * MINUTE
+    /** No fix this long on enemy ground (or location switched off) and the screen says so: well inside a minute. */
+    const val LOCATION_LOST_WARNING = 30_000L
     /** Sensor pose must be sampled this close to the photo's EXIF time. */
     const val POSE_MAX_SKEW = 3_000L
     /** The camera must point within this many degrees of the horizon: held like a camera, not flat or at the sky. */

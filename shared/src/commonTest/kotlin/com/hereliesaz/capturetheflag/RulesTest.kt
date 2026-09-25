@@ -31,6 +31,8 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import com.hereliesaz.capturetheflag.ui.Alerts
+import com.hereliesaz.capturetheflag.ui.fmt
 import kotlin.test.assertFalse
 import com.hereliesaz.capturetheflag.model.PingKind
 import com.hereliesaz.capturetheflag.chat.ChatAccess
@@ -248,6 +250,21 @@ class RulesTest {
         // Seen again on enemy ground first, and the slate's clean.
         val seen = engine.reportLocation(off, p.id, LocationFix(away, t + 20_000, 5.0)).game
         assertTrue(!engine.reportLocation(seen, p.id, LocationFix(home, t + 30_000, 5.0)).game.players.getValue(p.id).isJailed)
+    }
+
+    @Test fun losingLocationOnEnemyGroundSaysWhereAndWhatHappens() {
+        val g = activeGame()
+        val p = g.players.values.first()
+        val away = g.flags.getValue(p.team.opponent).location.north(100.0)
+        val t = DAY + 20 * MINUTE
+        val over = engine.reportLocation(g, p.id, LocationFix(away, t, 5.0)).game
+        assertNull(Alerts.locationLost(over, p.id, t, true, t + GameRules.LOCATION_LOST_WARNING - 1), "a fix 29 s old is fine")
+        val (title, body) = Alerts.locationLost(over, p.id, t, true, t + GameRules.LOCATION_LOST_WARNING)!!
+        assertEquals("Location lost", title)
+        assertTrue("jailed where you were last seen" in body && "%.5f".fmt(away.lat) in body, body)
+        assertNotNull(Alerts.locationLost(over, p.id, t, false, t + 1), "switched off: at once")
+        val home = engine.reportLocation(g, p.id, LocationFix(g.flags.getValue(p.team).location, t, 5.0)).game
+        assertNull(Alerts.locationLost(home, p.id, t, false, t + HOUR), "at home it doesn't matter")
     }
 
     @Test fun onEnemyGroundOrInJailYouReCutOffFromYourTeam() {
