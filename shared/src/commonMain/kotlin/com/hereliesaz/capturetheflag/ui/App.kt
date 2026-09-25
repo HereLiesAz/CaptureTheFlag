@@ -1,5 +1,6 @@
 package com.hereliesaz.capturetheflag.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -48,6 +49,7 @@ import com.hereliesaz.capturetheflag.model.PingKind
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.model.Player
 import com.hereliesaz.capturetheflag.model.Role
+import com.hereliesaz.capturetheflag.rules.Briefing
 import com.hereliesaz.capturetheflag.rules.GameRules
 import com.hereliesaz.capturetheflag.rules.Leaderboard
 import com.hereliesaz.capturetheflag.rules.Perks
@@ -150,6 +152,7 @@ private fun GameScreen(
     LaunchedEffect(fix) { fix?.let { if (mine != null) backend.reportLocation(city, it) } }
 
     Column(Modifier.fillMaxSize()) {
+        RulesPanel(Briefing.forPlayer(g, me?.id, now, fix?.let { g.territory.ownerOf(it.point) }))
         Column(Modifier.weight(1f).padding(16.dp)) {
             when (tab) {
                 Tab.STATUS -> StatusTab(backend, g, mine, now, fix?.let { g.territory.ownerOf(it.point) }, pings, city, onLeave)
@@ -537,4 +540,16 @@ private fun perkLines(p: Perks): List<String> = buildList {
     if (p.mentorShare > 0) add("Mentor: nearby juniors earn +${(p.mentorShare * 100).toInt()}%")
     if (p.deliberateMs > 0) add("Deliberate: +${p.deliberateMs / min} min to place the flag")
     if (isEmpty()) add("No advantages yet.")
+}
+
+/** The rules that apply to you right now. Pinned above every tab; nothing else is shown. */
+@Composable
+private fun RulesPanel(rules: List<String>) {
+    if (rules.isEmpty()) return
+    Column(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        rules.forEach { Text("— $it", style = MaterialTheme.typography.bodySmall) }
+    }
 }

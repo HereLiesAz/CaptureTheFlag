@@ -19,6 +19,10 @@ A city, cut in half. Two teams. Seven days. One photograph ends it.
 
 Every photo is also checked for freshness (2 min), and its EXIF location against the phone's live fused fix (60 m) to catch doctored metadata.
 
+## Briefing
+
+A rules panel sits above every tab and shows only what applies to the player right now (`rules/Briefing.kt`): sign-up, leader or follower during placement, home ground, enemy ground (with the next ping and when identity is revealed), breaking out, en route to jail, frozen, disqualified, or spectating. Everything else stays hidden.
+
 ## Jail
 
 Jail is conceptual, but the report is not.
