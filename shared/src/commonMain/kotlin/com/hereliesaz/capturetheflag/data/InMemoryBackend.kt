@@ -6,6 +6,7 @@ import com.hereliesaz.capturetheflag.chat.ChatMessage
 import com.hereliesaz.capturetheflag.commentary.Career
 import com.hereliesaz.capturetheflag.commentary.Commentary
 import com.hereliesaz.capturetheflag.commentary.Commentator
+import com.hereliesaz.capturetheflag.commentary.HeadToHead
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.engine.Transition
 import com.hereliesaz.capturetheflag.geo.GeoPoint
@@ -87,11 +88,15 @@ class InMemoryBackend(
         return result.verdict
     }
 
-    private val booth = Commentator(random) { id ->
-        val live = games.values.mapNotNull { it.value?.id }.toSet()
-        val names = games.values.mapNotNull { it.value?.city }.associate { it.id to it.name }
-        Career.from(_ledger.value, id, live) { names[it] ?: it.replaceFirstChar { c -> c.uppercase() } }
-    }
+    private val booth = Commentator(
+        random = random,
+        career = { id ->
+            val live = games.values.mapNotNull { it.value?.id }.toSet()
+            val names = games.values.mapNotNull { it.value?.city }.associate { it.id to it.name }
+            Career.from(_ledger.value, id, live) { names[it] ?: it.replaceFirstChar { c -> c.uppercase() } }
+        },
+        rivalry = { a, b -> HeadToHead.between(_ledger.value, a, b) },
+    )
     private val feeds = mutableMapOf<String, MutableStateFlow<List<Commentary>>>()
     private val lastLook = mutableMapOf<String, Millis>()
 

@@ -21,18 +21,23 @@ data class Commentary(val at: Millis, val text: String)
 /**
  * The radio booth. Turns state changes into live play-by-play for everyone in the city.
  *
- * It names names, keeps exact time, reads the play and guesses where it's going, and brings
- * up a player's record and past antics. What it never says is where: no coordinates, no
- * distances to anything, no flag venue. Guesses are about intent, not position.
+ * It names names, keeps exact time, reads the play and guesses where it's going (intruders
+ * after a flag or a jail, defenders closing on an intruder), brings up a player's record, and
+ * works rivalries out of who has jailed whom before. What it never says is where: no
+ * coordinates, no distances to anything, no flag venue. Guesses are about intent, not position.
  */
 class Commentator(
     private val random: Random = Random.Default,
     /** Career record for a player, from the ledger, not counting the current round. */
     private val career: (PlayerId) -> Career = { Career.NONE },
+    /** Who has jailed whom between two players, across every round including this one. */
+    private val rivalry: (PlayerId, PlayerId) -> HeadToHead = { _, _ -> HeadToHead.NONE },
 ) {
     /** Per-player speculation memory: when the booth last guessed, and the distances it guessed from. */
     private data class Hunch(val at: Millis, val toFlag: Double, val toJail: Double)
     private val hunches = mutableMapOf<PlayerId, Hunch>()
+    /** (hunter, intruder) → when the booth last called that chase, and the gap between them then. */
+    private val chases = mutableMapOf<Pair<PlayerId, PlayerId>, Pair<Millis, Double>>()
 
     /**
      * Lines for the change from [before] to [after]. [awards] and [notices] come from the same
@@ -49,6 +54,7 @@ class Commentator(
         val lines = mutableListOf<String>()
         if (before == null || before.id != after.id) {
             hunches.clear()
+            chases.clear()
             lines += pick(
                 "Good evening from ${after.city.name}, where the city has been cut clean in half and nobody asked the city.",
                 "We're coming to you live from ${after.city.name}. Sign-ups are open. The line has been drawn. Somebody lives on the wrong side of it.",
@@ -60,6 +66,7 @@ class Commentator(
         if (after.phase is GamePhase.Active) {
             lines += incursions(before, after)
             lines += speculation(before, after, now)
+            lines += hunts(after, now)
         }
         lines += notices.filter { "Last Stand" in it }.map {
             pick("$it The photo is thrown out. The crowd is not sure whether to cheer.", "$it Denied. You don't see that twice in a career. Maybe once.")
@@ -131,12 +138,13 @@ class Commentator(
             val name = cur.user.displayName
             when {
                 !was.isJailed && cur.isJailed -> {
-                    val by = awards.firstOrNull { it.points > 0 && it.reason == "Jailed $name" }?.let { a.players[it.user]?.user?.displayName }
+                    val tagger = awards.firstOrNull { it.points > 0 && it.reason == "Jailed $name" }?.let { a.players[it.user] }
+                    val by = tagger?.user?.displayName
                     add(if (by != null) pick(
                         "$by gets the shot! $name is going to jail, and the photo is not flattering.",
                         "OH, and $name is caught. $by with the camera, the proximity, the paperwork. Clean tag.",
                         "$name wandered one block too far and $by was waiting there like a bill.",
-                    ) + (bio(cur, jailedAgain = true)?.let { " That's $name, $it." } ?: "") else "$name has been jailed.")
+                    ) + (tagger?.let { rivalryOnTag(it, cur) } ?: bio(cur, jailedAgain = true)?.let { " That's $name, $it." } ?: "") else "$name has been jailed.")
                     cur.jailDeadline?.let { add("$name has ${(it - now) / GameRules.MINUTE} minutes to report to the ${cur.team.opponent.label} jail. Clock's running.") }
                 }
                 was.reportingSince == null && cur.reportingSince != null && cur.reportedAt == null -> add(pick(
@@ -194,7 +202,7 @@ class Commentator(
                     "$name is over the line! Into $host territory. $host, check your phones.",
                     "And there goes $name, across into $host country. Deep breath.",
                     "$name has stepped into $host territory. Nobody on $host knows it's them. Yet.",
-                ) + (bio(p)?.let { " That's $name, $it." } ?: ""))
+                ) + (nemesis(a, p)?.let { " $it" } ?: bio(p)?.let { " That's $name, $it." } ?: ""))
                 inc.pingsSent == reveal -> add(pick(
                     "Ping $reveal: $host's phones now show exactly who it is. $name, $minutes minutes in.",
                     "The mask is off. $host knows it's $name out there, $minutes minutes behind their lines.",
@@ -258,6 +266,69 @@ class Commentator(
             if (line != null) add(line)
         }
     }
+
+    /**
+     * Defenders who have been pinged about an intruder and are steadily closing on them.
+     * Called as a hunt, with the rivalry if there is one. Never says how close.
+     */
+    private fun hunts(a: Game, now: Millis): List<String> = buildList {
+        for ((id, inc) in a.incursions) {
+            if (inc.pingsSent == 0) continue
+            val prey = a.players[id] ?: continue
+            val preyAt = a.lastFix[id]?.point ?: continue
+            var called = false
+            for (d in a.team(prey.team.opponent)) {
+                if (d.isJailed || id !in (a.pingedAbout[d.id] ?: emptySet())) continue
+                val at = a.lastFix[d.id]?.point ?: continue
+                val gap = at.distanceTo(preyAt)
+                val key = d.id to id
+                val last = chases[key]
+                if (last == null) { chases[key] = now to gap; continue }
+                if (now - last.first < HUNCH_INTERVAL) continue
+                chases[key] = now to gap
+                if (called || last.second - gap <= HUNCH_MIN_M) continue
+                called = true
+                val h = rivalry(d.id, id)
+                val hunter = d.user.displayName
+                val target = prey.user.displayName
+                add(if (h.isRivalry) pick(
+                    "$hunter and $target. Again. $hunter has put $target away ${times(h.aJailedB)}, $target has returned the favor ${times(h.bJailedA)}, and right now $hunter is closing.",
+                    "Here we go. $hunter is moving on $target, and these two have history: ${h.aJailedB} to ${h.bJailedA}. Grudges don't need GPS.",
+                ) else pick(
+                    "$hunter has had the pings on $target and is not sitting still. That's a hunt, folks.",
+                    "Every step $hunter takes lately points at $target. You don't need a map to read that.",
+                    "$hunter's closing on $target. Somebody's about to have a very bad photograph taken.",
+                ))
+            }
+        }
+    }
+
+    /** On a tag: the head-to-head, including the tag just made, if these two have a past. */
+    private fun rivalryOnTag(tagger: Player, prisoner: Player): String? {
+        val h = rivalry(tagger.id, prisoner.id)
+        if (h.total < 2) return null
+        val t = tagger.user.displayName
+        val p = prisoner.user.displayName
+        return when {
+            h.bJailedA == 0 -> " That's ${ordinal(h.aJailedB)} time $t has jailed $p. $p has never once returned the favor."
+            h.aJailedB > h.bJailedA -> " $t leads that rivalry ${h.aJailedB} to ${h.bJailedA} now."
+            h.aJailedB == h.bJailedA -> " And that squares it: $t and $p, ${h.aJailedB} apiece."
+            else -> " $p still leads that one ${h.bJailedA} to ${h.aJailedB}, but $t is chipping away."
+        }
+    }
+
+    /** On a crossing: a defender with a history against this intruder, if there is one. */
+    private fun nemesis(a: Game, intruder: Player): String? {
+        if (random.nextInt(2) == 0) return null
+        val (d, h) = a.team(intruder.team.opponent).filterNot { it.isJailed }
+            .map { it to rivalry(it.id, intruder.id) }.filter { it.second.isRivalry }
+            .maxByOrNull { it.second.total } ?: return null
+        return "And somewhere on the other side, ${d.user.displayName}, who has jailed ${intruder.user.displayName} ${times(h.aJailedB)}, just got a lot more interested."
+    }
+
+    private fun times(n: Int) = when (n) { 0 -> "never"; 1 -> "once"; 2 -> "twice"; else -> "$n times" }
+
+    private fun ordinal(n: Int) = when (n) { 1 -> "the first"; 2 -> "the second"; 3 -> "the third"; else -> "the ${n}th" }
 
     // --- Endings and the clock ---------------------------------------------------------------
 

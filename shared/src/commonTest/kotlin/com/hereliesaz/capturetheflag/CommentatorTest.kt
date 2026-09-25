@@ -2,6 +2,8 @@ package com.hereliesaz.capturetheflag
 
 import com.hereliesaz.capturetheflag.commentary.Career
 import com.hereliesaz.capturetheflag.commentary.Commentator
+import com.hereliesaz.capturetheflag.commentary.HeadToHead
+import com.hereliesaz.capturetheflag.model.Award
 import com.hereliesaz.capturetheflag.engine.GameEngine
 import com.hereliesaz.capturetheflag.geo.DividingLine
 import com.hereliesaz.capturetheflag.geo.GeoPoint
@@ -22,6 +24,7 @@ import com.hereliesaz.capturetheflag.rules.GameRules.HOUR
 import com.hereliesaz.capturetheflag.rules.GameRules.MINUTE
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class CommentatorTest {
@@ -35,7 +38,7 @@ class CommentatorTest {
     private val engine = GameEngine(Random(5))
     private val booth = Commentator(Random(5))
     private val veteran = Career(points = 60_000, tags = 12, captures = 2, captureCities = listOf("Chicago", "Memphis"), rounds = 9, wins = 5)
-    private val colourBooth = Commentator(Random(1)) { veteran }
+    private val colourBooth = Commentator(Random(1), career = { veteran })
     private fun home(t: Team) = if (territory.ownerOf(north) == t) north else south
     private fun jailFor(h: GeoPoint) = GeoPoint(h.lat + if (h.lat > 30.0) 0.02 else -0.02, h.lng)
     private fun photo(at: GeoPoint, t: Long, ble: List<BleSighting> = emptyList()) = PhotoEvidence("i", at, t, LocationFix(at, t, 5.0), ble)
@@ -140,6 +143,51 @@ class CommentatorTest {
             t += 15 * MINUTE
         }
         assertTrue(lines.any { "flag" in it || "closing" in it }, lines.joinToString("\n"))
+        lines.givesNothingAway(g)
+    }
+
+    @Test fun headToHeadPairsTaggerWithPrisoner() {
+        fun tag(by: String, victim: String, at: Long) = listOf(
+            Award(by, "nola", "g$at", 12, "Jailed ${victim.uppercase()}", at),
+            Award(victim, "nola", "g$at", -5, "Jailed", at),
+        )
+        val ledger = tag("a", "b", 1) + tag("a", "b", 2) + tag("b", "a", 3) + tag("c", "b", 4)
+        val h = HeadToHead.between(ledger, "a", "b")
+        assertEquals(2, h.aJailedB); assertEquals(1, h.bJailedA)
+        assertTrue(h.isRivalry)
+        assertEquals(HeadToHead.NONE, HeadToHead.between(ledger, "a", "c"))
+    }
+
+    @Test fun tagsCallTheRivalry() {
+        var g = active()
+        val prisoner = g.players.values.first()
+        val jailer = g.team(prisoner.team.opponent).first()
+        val booth = Commentator(Random(3), rivalry = { a, b -> if (a == jailer.id && b == prisoner.id) HeadToHead(3, 1) else HeadToHead.NONE })
+        val t = DAY + MINUTE
+        g = engine.reportLocation(g, prisoner.id, LocationFix(home(jailer.team), t, 5.0)).game
+        val ble = BleTokenRegistry { k, _ -> if (k == "k") prisoner.id else null }
+        val tagged = engine.tag(g, jailer.id, prisoner.id, photo(home(jailer.team), t, listOf(BleSighting("k", t, -50))), t, ble)
+        val lines = booth.narrate(g, tagged.game, tagged.awards, tagged.notices, t).map { it.text }
+        assertTrue(lines.any { "3 to 1" in it }, lines.joinToString("\n"))
+    }
+
+    @Test fun huntersClosingInAreCalled() {
+        var g = active()
+        val prey = g.players.values.first()
+        val preyAt = home(prey.team.opponent)
+        var t = DAY + 1
+        g = engine.reportLocation(g, prey.id, LocationFix(preyAt, t, 5.0)).game
+        val hunter = g.team(prey.team.opponent).first { prey.id in (g.pingedAbout[it.id] ?: emptySet()) }
+        val booth = Commentator(Random(4), rivalry = { a, b -> if (a == hunter.id && b == prey.id) HeadToHead(2, 2) else HeadToHead.NONE })
+        val lines = mutableListOf<String>()
+        for (i in 0..4) {
+            t += 11 * MINUTE
+            val step = GeoPoint(preyAt.lat + (if (preyAt.lat > 30.0) 1 else -1) * 0.02 * (4 - i) / 4.0, preyAt.lng)
+            val tr = engine.reportLocation(g, hunter.id, LocationFix(step, t, 5.0))
+            lines += booth.narrate(g, tr.game, tr.awards, tr.notices, t).map { it.text }
+            g = tr.game
+        }
+        assertTrue(lines.any { hunter.user.displayName in it && prey.user.displayName in it && "2 to 2" in it || "Again" in it }, lines.joinToString("\n"))
         lines.givesNothingAway(g)
     }
 }
