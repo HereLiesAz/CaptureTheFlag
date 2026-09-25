@@ -192,7 +192,7 @@ class RulesTest {
         assertIs<Verdict.Rejected>(engine.captureFlag(g, p.id, forged, t).verdict)
         val real = engine.captureFlag(g, p.id, photo(flag.location, t), t)
         assertEquals(Outcome.FlagCaptured(p.team, p.id), (real.game.phase as GamePhase.Ended).outcome)
-        val pts = real.awards.groupBy { it.user }.mapValues { (_, v) -> v.sumOf { it.points } }
+        val pts = real.awards.filterNot { it.reason.startsWith("MVP") || it.reason.startsWith("Most") }.groupBy { it.user }.mapValues { (_, v) -> v.sumOf { it.points } }
         assertEquals(125L + if (p.isLeader) 15 else 0, pts[p.id])
         assertTrue(g.team(p.team.opponent).none { it.id in pts })
     }

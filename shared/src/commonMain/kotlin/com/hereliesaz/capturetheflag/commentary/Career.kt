@@ -20,6 +20,10 @@ data class Career(
     val rounds: Int = 0,
     /** Consecutive results ending with the latest finished round: positive = wins, negative = losses. Ties break it. */
     val streak: Int = 0,
+    /** Rounds as a team MVP. */
+    val mvps: Int = 0,
+    /** Mosts held in past rounds, by title, with how many times. */
+    val titles: Map<String, Int> = emptyMap(),
 ) {
     val level: Int get() = Progression.levelFor(points)
     val rookie: Boolean get() = rounds == 0
@@ -47,6 +51,8 @@ data class Career(
                 wins = past.count { it.reason == "Team won" || it.reason == "Opponent forfeited" },
                 rounds = past.map { it.game }.distinct().size,
                 streak = streak(past),
+                mvps = past.count { it.reason.startsWith("MVP") },
+                titles = past.filter { it.reason.startsWith("Most: ") }.groupingBy { it.reason.removePrefix("Most: ") }.eachCount(),
             )
         }
 

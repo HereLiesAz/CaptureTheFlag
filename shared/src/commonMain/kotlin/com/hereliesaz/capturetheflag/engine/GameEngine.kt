@@ -13,6 +13,7 @@ import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.Highlight
 import com.hereliesaz.capturetheflag.model.HighlightKind
 import com.hereliesaz.capturetheflag.model.Incursion
+import com.hereliesaz.capturetheflag.model.RoundStats
 import com.hereliesaz.capturetheflag.model.Jail
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.Millis
@@ -27,6 +28,8 @@ import com.hereliesaz.capturetheflag.model.Territory
 import com.hereliesaz.capturetheflag.model.User
 import com.hereliesaz.capturetheflag.rules.BleTokenRegistry
 import com.hereliesaz.capturetheflag.rules.GameRules
+import com.hereliesaz.capturetheflag.rules.Honors
+import com.hereliesaz.capturetheflag.rules.Most
 import com.hereliesaz.capturetheflag.rules.PingSchedule
 import com.hereliesaz.capturetheflag.rules.Points
 import com.hereliesaz.capturetheflag.rules.Progression
@@ -591,9 +594,14 @@ class GameEngine(
                 .map { game.award(it.id, Points.TEAM_WIN.toLong(), "Opponent forfeited", now) }
             Outcome.Cancelled -> emptyList()
         }
+        val withHonors = if (outcome == Outcome.Cancelled) awards else awards + honors(game, awards, now)
+        val listed = if (outcome == Outcome.Cancelled) emptyList() else Most.entries.flatMap { m ->
+            Honors.board(game, m).mapIndexed { i, (id, _) -> Highlight(HighlightKind.MADE_LIST, id, null, game.id, game.city.id, now, i + 1, m.title) }
+        }
         return Transition(
             game.copy(phase = GamePhase.Ended(outcome, now), incursions = emptyMap(), decoyWalks = emptyList()),
-            awards = mentored(game, awards),
+            awards = mentored(game, withHonors),
+            highlights = listed,
         )
     }
 
@@ -614,11 +622,47 @@ class GameEngine(
      * resulting state are dropped. What survives is added to the round's running totals.
      */
     private fun Transition.settled(): Transition {
-        val paid = awards.filter { a -> a.points <= 0 || game.players[a.user]?.isJailed != true }
-        if (paid.isEmpty()) return copy(awards = paid)
-        val earned = game.earned.toMutableMap()
+        val counted = copy(game = game.copy(stats = tally(game.stats, awards, highlights)))
+        val paid = awards.filter { a -> a.points <= 0 || counted.game.players[a.user]?.isJailed != true }
+        if (paid.isEmpty()) return counted.copy(awards = paid)
+        val earned = counted.game.earned.toMutableMap()
         paid.forEach { earned[it.user] = (earned[it.user] ?: 0L) + it.points }
-        return copy(game = game.copy(earned = earned), awards = paid)
+        return counted.copy(game = counted.game.copy(earned = earned), awards = paid)
+    }
+
+    /** Round stats move with what actually happened, frozen or not. */
+    private fun tally(stats: Map<PlayerId, RoundStats>, awards: List<Award>, highlights: List<Highlight>): Map<PlayerId, RoundStats> {
+        if (awards.isEmpty() && highlights.isEmpty()) return stats
+        val out = stats.toMutableMap()
+        fun bump(id: PlayerId, f: (RoundStats) -> RoundStats) { out[id] = f(out[id] ?: RoundStats()) }
+        for (a in awards) when {
+            a.points > 0 && a.reason.startsWith("Jailed ") -> bump(a.user) { it.copy(tags = it.tags + 1) }
+            a.reason == "Jailed" -> bump(a.user) { it.copy(timesJailed = it.timesJailed + 1) }
+            a.reason.startsWith("Survived ") -> {
+                val n = a.reason.removePrefix("Survived ").substringBefore(' ').toIntOrNull() ?: 0
+                bump(a.user) { it.copy(pingsSurvived = it.pingsSurvived + n, deepest = max(it.deepest, n)) }
+            }
+            a.reason.startsWith("Freed ") -> bump(a.user) { it.copy(freed = it.freed + (a.reason.removePrefix("Freed ").toIntOrNull() ?: 0)) }
+        }
+        for (h in highlights) when (h.kind) {
+            HighlightKind.NEAR_MISS -> bump(h.user) { it.copy(nearMisses = it.nearMisses + 1) }
+            HighlightKind.REPORTED -> bump(h.user) { it.copy(closestReportSec = minOf(it.closestReportSec ?: h.value, h.value)) }
+            HighlightKind.BOUNTY_COLLECTED -> bump(h.user) { it.copy(bountiesCashed = it.bountiesCashed + 1) }
+            else -> {}
+        }
+        return out
+    }
+
+    /**
+     * End-of-round bonuses: each team's MVP (counting the outcome's own points, so a capture
+     * weighs in) and every holder of every Most.
+     */
+    private fun honors(game: Game, outcomeAwards: List<Award>, now: Millis): List<Award> {
+        val earned = game.earned.toMutableMap()
+        outcomeAwards.forEach { earned[it.user] = (earned[it.user] ?: 0L) + it.points }
+        val final = game.copy(earned = earned)
+        return Honors.mvps(final).map { (t, id) -> game.award(id, Honors.MVP_BONUS.toLong(), "MVP: ${t.name}", now) } +
+            Honors.mosts(final).flatMap { h -> h.holders.map { game.award(it, h.most.bonus.toLong(), "Most: ${h.most.title}", now) } }
     }
 
     private fun perks(p: Player) = Progression.perksFor(p.level)

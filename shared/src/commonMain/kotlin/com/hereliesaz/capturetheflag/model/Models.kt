@@ -198,6 +198,8 @@ data class Game(
     val signups: List<User> = emptyList(),
     val flags: Map<Team, Flag> = emptyMap(),
     val jails: Map<Team, Jail> = emptyMap(),
+    /** What each player has done this round. Feeds MVPs and the Mosts. */
+    val stats: Map<PlayerId, RoundStats> = emptyMap(),
     /** Net points each player has earned this round. Zeroed on disqualification. */
     val earned: Map<PlayerId, Long> = emptyMap(),
     val lastFix: Map<PlayerId, LocationFix> = emptyMap(),
@@ -253,6 +255,11 @@ enum class HighlightKind {
     PAROLE,
     /** A Tripwire alarm. [Highlight.user] is the defender, [Highlight.other] the intruder. Secret until the round ends. */
     TRIPWIRE,
+    /**
+     * Made a Mosts list when the round ended. [Highlight.note] is the title, [Highlight.value] the rank.
+     * Only players who made a list in a round may have that round's antics and rivalries aired later.
+     */
+    MADE_LIST,
 }
 
 /**
@@ -268,6 +275,22 @@ data class Highlight(
     val city: CityId,
     val at: Millis,
     val value: Int = 0,
+    val note: String? = null,
 ) {
     val secret: Boolean get() = kind in setOf(HighlightKind.DECOY, HighlightKind.VANISH, HighlightKind.INTERROGATION, HighlightKind.TRIPWIRE)
 }
+
+/** One player's round, counted as it happens. */
+data class RoundStats(
+    val tags: Int = 0,
+    val timesJailed: Int = 0,
+    /** Pings endured across every incursion survived. */
+    val pingsSurvived: Int = 0,
+    /** Most pings endured in a single incursion survived. */
+    val deepest: Int = 0,
+    val freed: Int = 0,
+    val nearMisses: Int = 0,
+    /** Fewest seconds to spare on a jail check-in; null if never checked in. */
+    val closestReportSec: Int? = null,
+    val bountiesCashed: Int = 0,
+)

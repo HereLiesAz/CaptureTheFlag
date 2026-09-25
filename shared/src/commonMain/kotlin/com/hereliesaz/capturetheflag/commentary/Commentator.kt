@@ -13,6 +13,7 @@ import com.hereliesaz.capturetheflag.model.PlayerId
 import com.hereliesaz.capturetheflag.model.Role
 import com.hereliesaz.capturetheflag.model.Team
 import com.hereliesaz.capturetheflag.rules.GameRules
+import com.hereliesaz.capturetheflag.rules.Honors
 import com.hereliesaz.capturetheflag.rules.PingSchedule
 import com.hereliesaz.capturetheflag.rules.Progression
 import kotlin.random.Random
@@ -25,7 +26,8 @@ data class Commentary(val at: Millis, val text: String)
  *
  * It names names, keeps exact time, reads the play and guesses where it's going (intruders
  * after a flag or a jail, defenders closing on an intruder), brings up a player's record, and
- * works rivalries out of who has jailed whom before. What it never says is where: no
+ * works rivalries out of who has jailed whom before. Past antics and rivalries come only from
+ * rounds where the player (for a rivalry, both players) made a Mosts list. What it never says is where: no
  * coordinates, no distances to anything, no flag venue. Guesses are about intent, not position.
  */
 class Commentator(
@@ -36,6 +38,8 @@ class Commentator(
     private val rivalry: (PlayerId, PlayerId) -> HeadToHead = { _, _ -> HeadToHead.NONE },
     /** A player's highlights from finished rounds only. Never the round in play: decoys stay secret. */
     private val antics: (PlayerId) -> List<Highlight> = { emptyList() },
+    /** Whether a player made a Mosts list in a given finished round. Gates shared history. */
+    private val listed: (PlayerId, String) -> Boolean = { _, _ -> true },
     /** Display name for anyone, including players not in this round. */
     private val nameOf: (PlayerId) -> String? = { null },
     /** Display name for a city id. */
@@ -81,6 +85,8 @@ class Commentator(
             pick("$it The photo is thrown out. The crowd is not sure whether to cheer.", "$it Denied. You don't see that twice in a career. Maybe once.")
         }
         lines += levelUps(after, awards)
+        if (after.phase is GamePhase.Active) lines += honorsRace(before, after)
+        if (after.phase is GamePhase.Ended && before.phase !is GamePhase.Ended) lines += ceremony(after, awards)
         lines += moments(after, highlights)
         if (previousNow != null) lines += clock(after, previousNow, now)
         return lines.stamp(now)
@@ -410,7 +416,8 @@ class Commentator(
     private fun sharedHistory(a: Player, b: Player): String? {
         val an = a.user.displayName
         val bn = b.user.displayName
-        val between = antics(a.id).filter { it.other == b.id }.map { it to true } + antics(b.id).filter { it.other == a.id }.map { it to false }
+        val between = (antics(a.id).filter { it.other == b.id }.map { it to true } + antics(b.id).filter { it.other == a.id }.map { it to false })
+            .filter { (h, _) -> listed(a.id, h.game) && listed(b.id, h.game) }
         val (h, aFirst) = between.maxByOrNull { it.first.at } ?: return null
         val (x, y) = if (aFirst) an to bn else bn to an
         val where = cityName(h.city)
@@ -420,6 +427,68 @@ class Commentator(
             HighlightKind.TRIPWIRE -> "Back in $where, $x's tripwire went off the second $y crossed."
             HighlightKind.INTERROGATION -> "In $where, $x interrogated $y right off the map."
             HighlightKind.BOUNTY_COLLECTED -> "$x has cashed a bounty on $y before. In $where. $y remembers."
+            else -> null
+        }
+    }
+
+    /** Titles changing hands, live. Anyone overtaken on a list is a rival now. */
+    private fun honorsRace(b: Game, a: Game): List<String> = buildList {
+        val before = Honors.mosts(b).associateBy { it.most }
+        for (h in Honors.mosts(a)) {
+            val old = before[h.most]
+            if (old != null && old.holders == h.holders && old.value == h.value) continue
+            val newcomers = h.holders - (old?.holders ?: emptyList()).toSet()
+            if (newcomers.isEmpty()) continue
+            val who = newcomers.mapNotNull { a.players[it] }
+            val names = who.joinToString(" and ") { it.user.displayName }
+            val dethroned = (old?.holders ?: emptyList()).filter { it !in h.holders }.mapNotNull { a.players[it] }
+            val stat = "${h.value} for ${h.most.blurb}"
+            add(when {
+                old == null -> "$names opens the books on ${h.most.title}: $stat."
+                dethroned.isEmpty() -> "$names draws level for ${h.most.title}. $stat, and it's shared."
+                else -> pick(
+                    "$names takes ${h.most.title} from ${dethroned.joinToString(" and ") { it.user.displayName }}! $stat.",
+                    "New name at the top of ${h.most.title}: $names, $stat. ${dethroned.joinToString(" and ") { it.user.displayName }} will not enjoy hearing that.",
+                ) + (who.firstOrNull()?.let { w -> dethroned.firstNotNullOfOrNull { d -> titleRivalry(a, w, d, h.most.title) } }?.let { " $it" } ?: "")
+            })
+        }
+        val mvpBefore = Honors.mvps(b)
+        for ((t, id) in Honors.mvps(a)) {
+            if (mvpBefore[t] == id) continue
+            val p = a.players[id] ?: continue
+            add(pick(
+                "${p.user.displayName} is ${t.label}'s MVP right now. ${a.earned[id] ?: 0} points this round.",
+                "If the round ended this minute, ${t.label}'s MVP would be ${p.user.displayName}. It won't end this minute.",
+            ))
+        }
+    }
+
+    /** The final whistle's honors, read off the bonus awards. */
+    private fun ceremony(a: Game, awards: List<Award>): List<String> = buildList {
+        fun n(id: PlayerId) = a.players[id]?.user?.displayName ?: nameOf(id) ?: "someone"
+        val mvps = awards.filter { it.reason.startsWith("MVP: ") }
+        if (mvps.isNotEmpty()) add("Your MVPs: " + mvps.joinToString(", ") { m ->
+            val t = Team.valueOf(m.reason.removePrefix("MVP: "))
+            val prior = career(m.user).mvps
+            "${n(m.user)} for ${t.label}" + if (prior > 0) " (MVP number ${prior + 1})" else ""
+        } + ".")
+        val mosts = awards.filter { it.reason.startsWith("Most: ") }.groupBy { it.reason.removePrefix("Most: ") }
+        if (mosts.isNotEmpty()) add("And the Mosts: " + mosts.entries.joinToString("; ") { (title, list) ->
+            "$title, ${list.joinToString(" and ") { n(it.user) }}"
+        } + ". Bonus points all round. Well. Most of the way round.")
+    }
+
+    /**
+     * Rivalry recognition from the lists: two players who have both held [title] in past rounds,
+     * or who have jail history. Null if they're strangers.
+     */
+    private fun titleRivalry(a: Game, x: Player, y: Player, title: String): String? {
+        val xs = career(x.id).titles[title] ?: 0
+        val ys = career(y.id).titles[title] ?: 0
+        val h = rivalry(x.id, y.id)
+        return when {
+            xs > 0 && ys > 0 -> "Both of them have worn this crown before: ${x.user.displayName} ${times(xs)}, ${y.user.displayName} ${times(ys)}. Call it what it is. A rivalry."
+            h.isRivalry -> "And these two have jailed each other ${h.total} times between them. This is personal."
             else -> null
         }
     }
@@ -481,6 +550,8 @@ class Commentator(
             if (c.streak <= -3) add("who has lost ${-c.streak} straight and is due, or doomed")
             if (c.streak == -2) add("two losses running and looking for somebody to blame")
             if (c.rounds in 1..5 && c.pace >= 3.0) add("already level ${c.level} after ${c.rounds} ${if (c.rounds == 1) "round" else "rounds"}, a climb like that doesn't happen by accident")
+            if (c.mvps >= 2) add("${c.mvps}-time MVP")
+            c.titles.maxByOrNull { it.value }?.let { (t, n) -> add(if (n > 1) "$n-time holder of $t" else "who once held $t") }
             if (c.rounds >= 8 && c.level <= 5) add("${c.rounds} rounds in and still level ${c.level}. Patience is also a sport")
         }
         val story = anecdote(p.id)

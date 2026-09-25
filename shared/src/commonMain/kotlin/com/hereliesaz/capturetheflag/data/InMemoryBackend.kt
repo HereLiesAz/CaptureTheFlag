@@ -16,6 +16,7 @@ import com.hereliesaz.capturetheflag.model.City
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.Highlight
+import com.hereliesaz.capturetheflag.model.HighlightKind
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.Millis
@@ -93,6 +94,10 @@ class InMemoryBackend(
     private val _highlights = MutableStateFlow<List<Highlight>>(emptyList())
     override val highlights: StateFlow<List<Highlight>> = _highlights.asStateFlow()
 
+    /** Finished rounds in which [id] made a Mosts list: the only rounds the booth may dig into. */
+    private fun listedIn(id: PlayerId): Set<String> =
+        _highlights.value.filter { it.kind == HighlightKind.MADE_LIST && it.user == id }.map { it.game }.toSet() - liveGames()
+
     private fun liveGames() = games.values.mapNotNull { it.value?.takeIf { g -> g.phase !is GamePhase.Ended }?.id }.toSet()
     private fun cityLabel(id: String) = games.values.mapNotNull { it.value?.city }.firstOrNull { it.id == id }?.name
         ?: id.replaceFirstChar { c -> c.uppercase() }
@@ -100,9 +105,14 @@ class InMemoryBackend(
     private val booth = Commentator(
         random = random,
         career = { id -> Career.from(_ledger.value, id, liveGames(), ::cityLabel) },
-        rivalry = { a, b -> HeadToHead.between(_ledger.value, a, b) },
-        // Past rounds only: a decoy or vanish from the round still being played stays secret.
-        antics = { id -> liveGames().let { live -> _highlights.value.filter { it.user == id && it.game !in live } } },
+        // Rivalries only from rounds where both made a Mosts list.
+        rivalry = { a, b ->
+            val shared = listedIn(a) intersect listedIn(b)
+            HeadToHead.between(_ledger.value.filter { it.game in shared }, a, b)
+        },
+        // Finished rounds where they made a Mosts list only. The round in play stays secret.
+        antics = { id -> listedIn(id).let { ok -> _highlights.value.filter { it.user == id && it.game in ok } } },
+        listed = { id, game -> game in listedIn(id) },
         nameOf = { id -> users[id]?.displayName },
         cityName = ::cityLabel,
     )

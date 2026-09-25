@@ -53,6 +53,8 @@ import com.hereliesaz.capturetheflag.model.Player
 import com.hereliesaz.capturetheflag.model.Role
 import com.hereliesaz.capturetheflag.rules.Briefing
 import com.hereliesaz.capturetheflag.rules.GameRules
+import com.hereliesaz.capturetheflag.rules.Honors
+import com.hereliesaz.capturetheflag.rules.Most
 import com.hereliesaz.capturetheflag.rules.Leaderboard
 import com.hereliesaz.capturetheflag.rules.Perks
 import com.hereliesaz.capturetheflag.rules.Progression
@@ -219,6 +221,19 @@ private fun StatusTab(
         }
         item { OutlinedButton(onClick = onLeave) { Text("Change city") } }
         msg?.let { item { Text(it) } }
+        if (g.phase is GamePhase.Active || g.phase is GamePhase.Ended) {
+            val mvps = Honors.mvps(g)
+            val boards = Most.entries.map { it to Honors.board(g, it) }.filter { it.second.isNotEmpty() }
+            if (mvps.isNotEmpty() || boards.isNotEmpty()) item { HorizontalDivider(); Text("HONORS", fontWeight = FontWeight.Bold) }
+            mvps.forEach { (t, id) -> item { Text("MVP, $t: ${g.players[id]?.user?.displayName} · ${g.earned[id] ?: 0} pts · +${Honors.MVP_BONUS} at the whistle") } }
+            items(boards) { (most, board) ->
+                Column {
+                    Text("${most.title} (+${most.bonus})", fontWeight = FontWeight.Bold)
+                    Text(most.blurb, style = MaterialTheme.typography.labelSmall)
+                    Text(board.joinToString("  ·  ") { (id, v) -> "${g.players[id]?.user?.displayName} $v" })
+                }
+            }
+        }
         if (pings.isNotEmpty()) {
             item { HorizontalDivider(); Text("PINGS", fontWeight = FontWeight.Bold) }
             items(pings) { p ->
