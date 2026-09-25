@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "CaptureTheFlag"
-include(":app", ":shared")
+include(":app", ":shared", ":node")

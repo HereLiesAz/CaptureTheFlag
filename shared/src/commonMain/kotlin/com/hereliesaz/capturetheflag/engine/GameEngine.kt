@@ -332,9 +332,10 @@ class GameEngine(
     private fun near(game: Game, who: PlayerId, point: GeoPoint, radiusM: Double) =
         radiusM > 0 && game.lastFix[who]?.point?.distanceTo(point)?.let { it <= radiusM } == true
 
-    fun captureFlag(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Transition {
+    /** [visualMatch] is the matcher's similarity to the leader's registration photo, if one ran. */
+    fun captureFlag(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
-        val v = Verification.flagCapture(game, by, photo, now)
+        val v = Verification.flagCapture(game, by, photo, now, visualMatch)
         if (v != Verdict.Valid) return Transition(game, v)
         return end(game, Outcome.FlagCaptured(game.players.getValue(by).team, by), now).settled()
     }
@@ -537,9 +538,9 @@ class GameEngine(
      * of it for [GameRules.JAILBREAK_HOLD] unbroken. Leaving, or being jailed, ends the attempt.
      * On completion every teammate held (reported or en route, never the disqualified) walks free.
      */
-    fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Transition {
+    fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Transition {
         if (game.phase !is GamePhase.Active) return game.reject("Game is not live")
-        val v = Verification.jailbreak(game, by, photo, now)
+        val v = Verification.jailbreak(game, by, photo, now, visualMatch)
         if (v != Verdict.Valid) return Transition(game, v)
         val rescuer = game.players.getValue(by)
         if (rescuer.breakoutSince != null) return game.reject("Jailbreak already under way")
@@ -570,7 +571,7 @@ class GameEngine(
 
     private fun Player.freed() = copy(jailedAt = null, jailDeadline = null, reportingSince = null, reportedAt = null)
 
-    /** Flag moved (or any other disqualifying breach) as determined by moderation or detection. */
+    /** Any disqualifying breach, as determined by moderation. Flags are immovable things, so they can't be moved. */
     fun forfeit(game: Game, loser: Team, reason: String, now: Millis): Transition =
         if (game.phase is GamePhase.Ended) game.reject("Game already over") else end(game, Outcome.Forfeit(loser, reason), now).settled()
 

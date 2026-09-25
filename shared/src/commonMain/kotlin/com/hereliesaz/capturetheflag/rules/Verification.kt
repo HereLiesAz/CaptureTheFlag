@@ -1,12 +1,15 @@
 package com.hereliesaz.capturetheflag.rules
 
 import com.hereliesaz.capturetheflag.geo.GeoPoint
+import com.hereliesaz.capturetheflag.geo.bearingTo
 import com.hereliesaz.capturetheflag.geo.distanceTo
+import com.hereliesaz.capturetheflag.geo.headingDelta
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.Millis
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import com.hereliesaz.capturetheflag.model.PlayerId
 import kotlin.math.abs
+import kotlin.math.max
 
 sealed interface Verdict {
     data object Valid : Verdict
@@ -35,7 +38,29 @@ object Verification {
         if (exif.distanceTo(fix.point) > GameRules.EXIF_VS_DEVICE_TOLERANCE_M) {
             return null to "Photo location disagrees with device location"
         }
+        // Sensors: the phone was held like a camera, when the photo says, pointing where the photo says.
+        val pose = e.pose ?: return null to "No motion sensor reading at capture"
+        if (abs(pose.at - taken) > GameRules.POSE_MAX_SKEW) return null to "Sensor reading does not match photo time"
+        if (abs(pose.pitchDeg) > GameRules.POSE_MAX_TILT_DEG) return null to "Phone wasn't held like a camera"
+        val claimed = e.exifDirection ?: return null to "Photo does not record which way it faced"
+        if (headingDelta(claimed, pose.azimuthDeg) > GameRules.DIRECTION_VS_SENSOR_DEG) {
+            return null to "Photo's facing disagrees with the phone's sensors"
+        }
         return exif to null
+    }
+
+    /**
+     * The camera pointed at [target] from [from]. Skipped when standing on top of it; widened
+     * by how much the GPS uncertainty could swing the bearing up close.
+     */
+    private fun facing(e: PhotoEvidence, from: GeoPoint, target: GeoPoint, accuracyM: Double): String? {
+        val d = from.distanceTo(target)
+        if (d < GameRules.FACING_MIN_DISTANCE_M) return null
+        val slack = kotlin.math.atan2(accuracyM, d) * 180 / kotlin.math.PI
+        val heading = e.pose?.azimuthDeg ?: return "No motion sensor reading at capture"
+        return if (headingDelta(heading, from.bearingTo(target)) > GameRules.FACING_TOLERANCE_DEG + slack) {
+            "Camera wasn't pointed at the target"
+        } else null
     }
 
     /** Leader registering the team flag at a venue they identified by address/coordinates. */
@@ -71,7 +96,7 @@ object Verification {
     }
 
     /** Jailbreak: a free player photographs the enemy jail. */
-    fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Verdict {
+    fun jailbreak(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Verdict {
         val p = game.players[by] ?: return Verdict.Rejected("Not in this game")
         if (p.isJailed) return Verdict.Rejected("Jailed players cannot break anyone out")
         val jail = game.jails[p.team.opponent] ?: return Verdict.Rejected("Enemy jail not placed")
@@ -80,11 +105,12 @@ object Verification {
         if (exif.distanceTo(jail.location) > GameRules.JAIL_TOLERANCE_M) {
             return Verdict.Rejected("Photo was not taken at the enemy jail")
         }
+        sameThing(photo, exif, jail.photo, jail.location, visualMatch)?.let { return Verdict.Rejected(it) }
         return Verdict.Valid
     }
 
     /** Win condition: an opponent photographs the flag where it was registered. */
-    fun flagCapture(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis): Verdict {
+    fun flagCapture(game: Game, by: PlayerId, photo: PhotoEvidence, now: Millis, visualMatch: Double? = null): Verdict {
         val p = game.players[by] ?: return Verdict.Rejected("Not in this game")
         if (p.isJailed) return Verdict.Rejected("Jailed players cannot capture")
         val flag = game.flags[p.team.opponent] ?: return Verdict.Rejected("Enemy flag not placed")
@@ -93,7 +119,49 @@ object Verification {
         if (exif.distanceTo(flag.location) > GameRules.FLAG_CAPTURE_TOLERANCE_M) {
             return Verdict.Rejected("Photo was not taken at the enemy flag")
         }
+        sameThing(photo, exif, flag.photo, flag.location, visualMatch)?.let { return Verdict.Rejected(it) }
         return Verdict.Valid
+    }
+
+    /**
+     * The photo shows the thing the leader registered. The leader's registration photo is the
+     * reference: they stood at a known spot facing the object. From the same spot, the camera
+     * must face the same way. From anywhere else, the two camera rays must meet in front of
+     * both, within [GameRules.REFERENCE_REACH_M] of where the leader stood. If a visual matcher
+     * scored the two images, the score must clear [GameRules.VISUAL_MATCH_MIN].
+     * Falls back to "pointed at the registered location" if the reference has no pose.
+     */
+    private fun sameThing(e: PhotoEvidence, from: GeoPoint, ref: PhotoEvidence, registered: GeoPoint, visualMatch: Double?): String? {
+        if (visualMatch != null && visualMatch < GameRules.VISUAL_MATCH_MIN) return "Photo doesn't show what the leader registered"
+        val accuracy = e.deviceFix!!.accuracyM
+        val refAt = ref.exifLocation
+        val refHeading = ref.pose?.azimuthDeg
+        val heading = e.pose?.azimuthDeg ?: return "No motion sensor reading at capture"
+        if (refAt == null || refHeading == null) return facing(e, from, registered, accuracy)
+        val wrong = "Camera wasn't pointed at what the leader registered"
+        val slack = accuracy + (ref.deviceFix?.accuracyM ?: 0.0)
+
+        if (from.distanceTo(refAt) < GameRules.FACING_MIN_DISTANCE_M) {
+            return if (headingDelta(heading, refHeading) > GameRules.FACING_TOLERANCE_DEG) wrong else null
+        }
+        // Local plane in metres around the leader's spot; rays as unit vectors (east, north).
+        val k = kotlin.math.cos(refAt.lat * kotlin.math.PI / 180) * 111_320.0
+        val qx = (from.lng - refAt.lng) * k
+        val qy = (from.lat - refAt.lat) * 111_320.0
+        fun dir(h: Double) = (h * kotlin.math.PI / 180).let { kotlin.math.sin(it) to kotlin.math.cos(it) }
+        val (ax, ay) = dir(refHeading)
+        val (bx, by) = dir(heading)
+        val det = bx * ay - ax * by
+        if (abs(det) < kotlin.math.sin(GameRules.PARALLEL_DEG * kotlin.math.PI / 180)) {
+            // Near-parallel: fine only if looking the same way from roughly on the leader's line.
+            val lateral = abs(ax * qy - ay * qx)
+            return if (headingDelta(heading, refHeading) < 90 && lateral <= GameRules.FACING_MIN_DISTANCE_M + slack) null else wrong
+        }
+        // Solve leader + t·a = capturer + s·b.
+        val t = (bx * qy - by * qx) / det
+        val u = (ax * qy - ay * qx) / det
+        val inFront = t >= -slack && u >= -slack
+        return if (inFront && t <= GameRules.REFERENCE_REACH_M + slack) null else wrong
     }
 
     /**
@@ -124,6 +192,7 @@ object Verification {
             return Verdict.Rejected("That player is not in your territory")
         }
         val perks = Progression.perksFor(tagger.level)
+        facing(photo, exif, targetFix.point, max(photo.deviceFix!!.accuracyM, targetFix.accuracyM))?.let { return Verdict.Rejected(it) }
         if (exif.distanceTo(targetFix.point) > GameRules.TAG_TOLERANCE_M + perks.sharpLensM) {
             return Verdict.Rejected("That player was not where the photo was taken")
         }

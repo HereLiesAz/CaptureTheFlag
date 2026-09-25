@@ -97,7 +97,18 @@ data class PhotoEvidence(
     val exifTakenAt: Millis?,
     val deviceFix: LocationFix?,
     val bleSightings: List<BleSighting> = emptyList(),
+    /** The facing the photo claims in its EXIF (GPSImgDirection), degrees from true north. */
+    val exifDirection: Double? = null,
+    /** Where the phone was actually pointing at the shutter, from its motion sensors. */
+    val pose: DevicePose? = null,
 )
+
+/**
+ * The phone's orientation at the shutter, read from the rotation-vector sensor.
+ * [azimuthDeg] is where the back camera points, degrees from true north. [pitchDeg] is the
+ * camera axis above (+) or below (−) the horizon. [rollDeg] is rotation about that axis.
+ */
+data class DevicePose(val azimuthDeg: Double, val pitchDeg: Double, val rollDeg: Double, val at: Millis)
 
 /** A rotating token heard over BLE. Tokens map to players server-side only. */
 data class BleSighting(val token: String, val at: Millis, val rssi: Int)

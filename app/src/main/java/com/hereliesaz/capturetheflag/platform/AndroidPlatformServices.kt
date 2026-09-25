@@ -24,6 +24,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.hereliesaz.capturetheflag.data.PlatformServices
 import com.hereliesaz.capturetheflag.geo.GeoPoint
+import com.hereliesaz.capturetheflag.model.DevicePose
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -39,34 +40,43 @@ import java.io.File
 class AndroidPlatformServices(private val activity: ComponentActivity) : PlatformServices {
     private val proximity = Proximity(activity)
     private val fused = LocationServices.getFusedLocationProviderClient(activity)
-    private var pending: CompletableDeferred<Boolean>? = null
-    private val camera = activity.registerForActivityResult(ActivityResultContracts.TakePicture()) {
+    private var pending: CompletableDeferred<CameraActivity.Shot>? = null
+    private val camera = activity.registerForActivityResult(CameraActivity.Contract()) {
         pending?.complete(it)
     }
 
     override val location: StateFlow<com.hereliesaz.capturetheflag.model.LocationFix?> = Tracking.location
 
-    private suspend fun shoot(prefix: String): Uri? {
+    /**
+     * Opens the in-app camera. A fresh fix is taken first and handed to the camera, which
+     * stamps it into the photo's EXIF; that same fix is published as the live device fix.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun shoot(prefix: String, front: Boolean): Pair<Uri, CameraActivity.Pose?>? {
         val dir = File(activity.filesDir, "photos").apply { mkdirs() }
         val file = File(dir, "$prefix-${System.currentTimeMillis()}.jpg")
-        val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.photos", file)
-        val done = CompletableDeferred<Boolean>().also { pending = it }
-        camera.launch(uri)
-        return uri.takeIf { done.await() && file.length() > 0 }
+        val live = runCatching { fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
+        live?.let { Tracking.publish(it.latitude, it.longitude, it.time, it.accuracy.toDouble()) }
+        val done = CompletableDeferred<CameraActivity.Shot>().also { pending = it }
+        camera.launch(CameraActivity.Request(file.path, front, live))
+        val shot = done.await()
+        if (!shot.taken || file.length() == 0L) return null
+        return FileProvider.getUriForFile(activity, "${activity.packageName}.photos", file) to shot.pose
     }
 
-    override suspend fun takeSelfie(): String? = shoot("selfie")?.toString()
+    override suspend fun takeSelfie(): String? = shoot("selfie", front = true)?.first?.toString()
 
     @SuppressLint("MissingPermission")
     override suspend fun takePhoto(): PhotoEvidence? {
-        val uri = shoot("evidence") ?: return null
-        // Live fix sampled right after the shutter; compared server-side against the EXIF.
-        val live = runCatching { fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
-        live?.let { Tracking.publish(it.latitude, it.longitude, it.time, it.accuracy.toDouble()) }
-        val (gps, taken) = withContext(Dispatchers.IO) {
+        val (uri, pose) = shoot("evidence", front = false) ?: return null
+        val (gps, taken, facing) = withContext(Dispatchers.IO) {
             activity.contentResolver.openInputStream(uri)!!.use { s ->
                 val exif = ExifInterface(s)
-                exif.latLong?.let { GeoPoint(it[0], it[1]) } to exif.dateTimeOriginal
+                Triple(
+                    exif.latLong?.let { GeoPoint(it[0], it[1]) },
+                    exif.dateTimeOriginal,
+                    exif.getAttributeDouble(ExifInterface.TAG_GPS_IMG_DIRECTION, Double.NaN).takeUnless { it.isNaN() },
+                )
             }
         }
         return PhotoEvidence(
@@ -75,6 +85,8 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
             exifTakenAt = taken,
             deviceFix = Tracking.location.value,
             bleSightings = taken?.let { proximity.around(it) } ?: proximity.around(System.currentTimeMillis()),
+            exifDirection = facing,
+            pose = pose?.let { DevicePose(it.azimuth, it.pitch, it.roll, it.at) },
         )
     }
 

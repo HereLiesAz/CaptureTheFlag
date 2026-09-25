@@ -10,14 +10,42 @@ A city, cut in half. Two teams. Seven days. One photograph ends it.
 | 24 h sign-up → 1 h flag placement → 7 days of play → tie. Next round starts on request after any ending | `engine/GameEngine.kt`, `rules/GameRules.kt` |
 | Fewer than 2 sign-ups: round cancelled | `GameEngine.closeSignup` |
 | Random, size-balanced teams; one random captain each; captain names up to 2 co-captains | `rules/TeamAssignment.kt` |
-| Leaders register venue (public space / public building / business), address, and a flag photo with GPS EXIF. Venue must sit inside the team's own territory | `Verification.flagRegistration` |
+| The flag is not an object: leaders choose something already there that cannot move (a statue, a doorway, a mural) at a public space, public building or business, and register it with its address and a photo with GPS EXIF. Venue must sit inside the team's own territory | `Verification.flagRegistration` |
 | Leaders also register a jail: public, own territory, flag first, at least 400 m from it. Public to both teams. Missing flag or jail at the deadline forfeits | `Verification.jailRegistration` |
 | Win: an opponent photographs the flag within 40 m of its registered location | `Verification.flagCapture` |
 | Jail: photo of an opponent standing in your territory. Photo EXIF must match the target's last fix (60 m), and the target's BLE token must have been heard within 60 s | `Verification.tag` |
 | Incursion pings at entry, +60, +30, +15, +10, +5, then every 5 min. Each goes to a fresh random third (rounded up) of the opposing team. Identity attached from ping 6 | `rules/PingSchedule.kt` |
 | Chat: city-wide (anyone registered, onlookers included), private team room, teammate-only DMs | `chat/Chat.kt` |
 
-Every photo is also checked for freshness (2 min), and its EXIF location against the phone's live fused fix (60 m) to catch doctored metadata.
+Every photo goes through the same checks (`Verification.sound`, `Verification.facing`):
+
+| Check | Tolerance |
+|---|---|
+| EXIF location and time exist; photo is fresh | 2 min |
+| EXIF location agrees with the phone's own GPS fix, taken at the shutter | 60 m, fix accurate to 50 m |
+| Motion-sensor pose sampled when the photo was taken | 3 s |
+| Phone held like a camera: camera axis near the horizon | ±50° |
+| Photo's claimed facing (EXIF GPSImgDirection) agrees with the sensor heading | 25° |
+| Tags: camera pointed at the tagged player | 45°, widened by GPS uncertainty up close; not judged within 15 m |
+| Flag capture and jailbreak: photo shows what the leader registered | see below |
+| Flag capture and jailbreak: visual match to the registration photo, when a matcher runs | similarity ≥ 0.35 |
+
+**Against the leader's photo.** The leader's registration photo is the reference: a known spot, facing the object. A capture or jailbreak photo taken within 15 m of that spot must face the same way (45°). From anywhere else, the two camera rays must meet in front of both cameras, within 60 m of where the leader stood (widened by both GPS fixes' uncertainty). Near-parallel rays pass only if the photographer is roughly on the leader's line looking the same way. `PhotoMatcher` (`data/PhotoMatcher.kt`) is the hook for comparing the images themselves; it isn't implemented yet, and needs server-side feature matching.
+
+Photos come from the in-app camera (`platform/CameraActivity.kt`), which stamps GPS from a fresh fix, reads the rotation-vector sensor at the shutter (heading corrected to true north by local magnetic declination), writes the facing into EXIF, and hands the pose back with the photo. A phone without a rotation sensor can't produce valid evidence.
+
+## City onboarding
+
+The first time anyone registers in a city, it gets surveyed (`onboarding/`). Everyone after that plays on the stored result, and concurrent first requests share one run. The player who triggers it watches the stages on the city screen.
+
+1. **City limits** from OpenStreetMap via Nominatim (largest outer ring of the administrative boundary).
+2. **Grid**: about 150 square cells, 300 m to 3 km a side depending on city size, kept where the centre is inside the limits.
+3. **People** per cell from WorldPop's 100 m global population grid.
+4. **Buildings** per cell from OpenStreetMap via Overpass.
+5. **Water** (lakes, riverbanks, bays) and **barriers** (rivers 1.0, motorways 0.8, canals 0.7, rail 0.6, trunk roads 0.5) fetched once for the city and measured into each cell.
+6. The partitioner then splits it, as before.
+
+Local time for night perks is estimated from longitude. The services are free and ask for polite use: requests identify the app and run at most four at a time. This belongs on the server once there is one; for now the device does it.
 
 ## Briefing
 
@@ -51,7 +79,7 @@ What it never says: coordinates, distances, the flag's venue or address.
 
 Jail is conceptual, but the report is not.
 
-1. **Tagged.** The prisoner gets a deadline to reach the enemy jail, set by how long the trip takes from where they were caught: the faster of walking and transit, times a weather factor (snow, ice, heat), ×1.25, +10 min, at least 15 min, plus the 5 min report.
+1. **Tagged.** The prisoner gets a deadline to reach the enemy jail, set by how long the trip takes from where they were caught: the faster of walking and transit, ×1.25, +10 min, at least 15 min, plus the 5 min report.
 2. **Report.** Stand within 40 m of the jail for 5 unbroken minutes before the deadline. Stepping away restarts the clock. After that they may leave.
 3. **Frozen.** From the tag until release, a prisoner earns no points and cannot capture, tag, or break anyone out.
 4. **Disqualified.** Miss the deadline and they are out for the round: still frozen, never freed, and every point they earned this round is taken back.
@@ -59,7 +87,7 @@ Jail is conceptual, but the report is not.
 6. **Parole** (perk) only applies once the prisoner has reported.
 7. **Final whistle.** The freeze lifts at the end of the round, so reported prisoners share in the win or tie. The disqualified do not.
 
-Travel time is a general estimate, not a live route (`HeuristicTravel` in `data/TravelTime.kt`): straight-line distance × 1.3 for detours, then the faster of walking at 5 km/h or transit at 18 km/h plus 15 min of waiting and walking. `WeatherFactor` scales it for conditions.
+Travel time is a general estimate, not a live route (`HeuristicTravel` in `data/TravelTime.kt`): straight-line distance × 1.3 for detours, then the faster of walking at 5 km/h or transit at 18 km/h plus 15 min of waiting and walking.
 
 ## Points and levels
 
@@ -140,6 +168,20 @@ Held live, paid at the final whistle, shown in the Status tab and called on the 
 
 Each list shows the top three. Making a list is what makes a round memorable: at the whistle the engine logs who made which list, and in later rounds the booth may only air a player's antics from rounds where they made one, and a rivalry only from rounds where both did.
 
+## Running a node
+
+A node is a Nostr relay, referee and city surveyor in one (`node/`, design in `docs/DECENTRALIZED.md`). It is the prototype of the decentralized server: one machine that stays on.
+
+~~~
+PORT=7447 DATA_DIR=./node-data ./gradlew :node:run
+# with a private GitHub repo clone as the shared archive
+PORT=7447 DATA_DIR=./node-data ARCHIVE=/path/to/repo-clone ./gradlew :node:run
+# or a gated Google Drive folder kept in sync by Drive for desktop / rclone
+PORT=7447 DATA_DIR=./node-data ARCHIVE=~/GoogleDrive/ctf-archive ARCHIVE_SYNC=external ./gradlew :node:run
+~~~
+
+`DATA_DIR/node.key` is the node's identity. Back it up. It is also its reputation.
+
 ## Structure
 
 ~~~
@@ -151,6 +193,8 @@ shared/   Compose Multiplatform (android + jvm). Rules, engine, chat, UI. No pla
   commonMain/.../ui         Screens
   commonTest                Rules tests (run: gradle :shared:jvmTest)
 app/      Android: camera + EXIF, fused location foreground service, BLE proximity
+node/     Decentralized node: Nostr relay, referee, surveyor, archive
+docs/     Design documents
 ~~~
 
 The engine is meant to run on the server, authoritatively. Clients only render.
@@ -164,10 +208,7 @@ Each phone advertises a server-issued token that rotates every 15 minutes over B
 ## Open questions
 
 - **Backend.** `InMemoryBackend` is single-device, for development only. Needs a real server (Firebase, Supabase, Ktor…) running `GameEngine`.
-- **City data.** `CityDataSource` needs real feeds: census population, OSM buildings/land/water, barrier features. `DemoCityDirectory` is a synthetic New Orleans.
-- **Weather.** `NoWeather` is a stand-in until a weather source is chosen.
-- **Flag forfeit detection.** How a moved flag is detected (periodic re-photo, challenge by opponents, moderation) is not yet specified. `GameEngine.forfeit` is the hook.
-- **Camera EXIF.** Many stock cameras strip GPS unless location tagging is turned on. An in-app CameraX capture would remove that dependency.
+- **Photo trust.** The in-app camera (`platform/CameraActivity.kt`) stamps GPS EXIF from a fresh fix at the shutter, so stock camera settings no longer matter. It also means EXIF and the device fix now come from the same source: a modified app could forge both. A real server should add device attestation (Play Integrity) to evidence.
 
 ## Stack
 

@@ -11,6 +11,7 @@ import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.LocationFix
 import com.hereliesaz.capturetheflag.model.Outcome
+import com.hereliesaz.capturetheflag.model.DevicePose
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import com.hereliesaz.capturetheflag.model.Role
 import com.hereliesaz.capturetheflag.model.Team
@@ -91,7 +92,7 @@ class RulesTest {
     private val engine = GameEngine(Random(42))
 
     private fun photo(at: GeoPoint, t: Long, ble: List<BleSighting> = emptyList()) =
-        PhotoEvidence("img", at, t, LocationFix(at, t, 5.0), ble)
+        PhotoEvidence("img", at, t, LocationFix(at, t, 5.0), ble, exifDirection = 0.0, pose = DevicePose(0.0, 0.0, 0.0, t))
 
     private fun activeGame(): Game {
         var g = engine.newRound("g1", city, territory, 0)

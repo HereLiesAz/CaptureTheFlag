@@ -7,3 +7,5 @@ build/
 **/build/
 .cxx/
 .externalNativeBuild/
+
+node-data/

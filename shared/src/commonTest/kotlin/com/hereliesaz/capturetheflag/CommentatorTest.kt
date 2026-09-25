@@ -15,6 +15,7 @@ import com.hereliesaz.capturetheflag.model.City
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.LocationFix
+import com.hereliesaz.capturetheflag.model.DevicePose
 import com.hereliesaz.capturetheflag.model.PhotoEvidence
 import com.hereliesaz.capturetheflag.model.Role
 import com.hereliesaz.capturetheflag.model.Team
@@ -43,7 +44,7 @@ class CommentatorTest {
     private val colourBooth = Commentator(Random(1), career = { veteran })
     private fun home(t: Team) = if (territory.ownerOf(north) == t) north else south
     private fun jailFor(h: GeoPoint) = GeoPoint(h.lat + if (h.lat > 30.0) 0.02 else -0.02, h.lng)
-    private fun photo(at: GeoPoint, t: Long, ble: List<BleSighting> = emptyList()) = PhotoEvidence("i", at, t, LocationFix(at, t, 5.0), ble)
+    private fun photo(at: GeoPoint, t: Long, ble: List<BleSighting> = emptyList()) = PhotoEvidence("i", at, t, LocationFix(at, t, 5.0), ble, exifDirection = 0.0, pose = DevicePose(0.0, 0.0, 0.0, t))
 
     private fun active(): Game {
         var g = engine.newRound("g", city, territory, 0)

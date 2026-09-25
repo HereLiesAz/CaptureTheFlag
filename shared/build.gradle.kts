@@ -21,10 +21,15 @@ kotlin {
             implementation("org.jetbrains.compose.ui:ui:1.12.1")
             implementation("org.jetbrains.compose.material3:material3:1.9.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+            // City onboarding: open-data lookups (Nominatim, WorldPop, Overpass).
+            implementation("io.ktor:ktor-client-core:3.6.0")
+            implementation("io.ktor:ktor-client-cio:3.6.0")
+            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+            implementation("io.ktor:ktor-client-mock:3.6.0")
         }
     }
 }

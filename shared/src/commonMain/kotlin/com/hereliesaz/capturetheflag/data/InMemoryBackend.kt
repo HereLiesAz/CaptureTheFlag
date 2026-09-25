@@ -12,6 +12,8 @@ import com.hereliesaz.capturetheflag.engine.Transition
 import com.hereliesaz.capturetheflag.geo.GeoPoint
 import com.hereliesaz.capturetheflag.geo.Polygon
 import com.hereliesaz.capturetheflag.model.Award
+import com.hereliesaz.capturetheflag.onboarding.CityOnboarding
+import com.hereliesaz.capturetheflag.onboarding.Onboarding
 import com.hereliesaz.capturetheflag.model.City
 import com.hereliesaz.capturetheflag.model.FlagVenueKind
 import com.hereliesaz.capturetheflag.model.Game
@@ -44,6 +46,19 @@ import kotlin.random.Random
 /** Resolves a requested city name to its boundary and statistical grid. */
 interface CityDirectory {
     suspend fun resolve(cityName: String): Pair<City, List<CityCell>>?
+
+    /** First-time setup progress for [cityName], if this directory gathers cities on demand. */
+    fun progress(cityName: String): StateFlow<Onboarding?> = NO_PROGRESS
+
+    private companion object {
+        val NO_PROGRESS: StateFlow<Onboarding?> = MutableStateFlow(null)
+    }
+}
+
+/** Real cities: the first registration in a city gathers its data (see [CityOnboarding]); later ones reuse it. */
+class OnboardedDirectory(private val onboarding: CityOnboarding) : CityDirectory {
+    override suspend fun resolve(cityName: String) = onboarding.resolve(cityName)?.let { it.city to it.cells }
+    override fun progress(cityName: String) = onboarding.state(cityName)
 }
 
 /**
@@ -55,7 +70,7 @@ class InMemoryBackend(
     private val clock: () -> Millis,
     private val random: Random = Random.Default,
     private val travel: TravelTimeEstimator = HeuristicTravel,
-    private val weather: WeatherFactor = NoWeather,
+    private val matcher: PhotoMatcher? = null,
 ) : GameBackend {
     private val _ledger = MutableStateFlow<List<Award>>(emptyList())
     override val ledger: StateFlow<List<Award>> = _ledger.asStateFlow()
@@ -139,6 +154,8 @@ class InMemoryBackend(
         if (lines.isNotEmpty()) feed(city).update { (it + lines).takeLast(FEED_LENGTH) }
     }
 
+    override fun onboarding(cityName: String): StateFlow<Onboarding?> = directory.progress(cityName)
+
     override fun commentary(cityName: String): StateFlow<List<Commentary>> = feed(cityName).asStateFlow()
 
     override suspend fun register(displayName: String, selfieUri: String): User =
@@ -154,7 +171,8 @@ class InMemoryBackend(
             broadcast(cityName, current, t, ticked.awards, ticked.notices)
             if (t.phase !is GamePhase.Ended) return t.also { flow.value = it }
         }
-        val (city, cells) = directory.resolve(cityName) ?: error("Unknown city: $cityName")
+        val (city, cells) = directory.resolve(cityName)
+            ?: error((directory.progress(cityName).value as? Onboarding.Failed)?.reason ?: "Couldn't set up $cityName")
         val line = partitioner.partition(cells, random).line
         return engine.newRound("g-${random.nextLong().toULong().toString(36)}", city, Territory(city, line, cells), clock())
             .also { broadcast(cityName, flow.value, it, emptyList(), emptyList()); flow.value = it }
@@ -174,11 +192,20 @@ class InMemoryBackend(
     override suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence) =
         apply(cityName) { engine.placeJail(it, myId(), venueName, address, venue, photo, clock()) }
 
-    override suspend fun jailbreak(cityName: String, photo: PhotoEvidence) =
-        apply(cityName) { engine.jailbreak(it, myId(), photo, clock()) }
+    override suspend fun jailbreak(cityName: String, photo: PhotoEvidence): Verdict {
+        val ref = enemyOf(cityName)?.let { (g, t) -> g.jails[t]?.photo }
+        val score = ref?.let { matcher?.similarity(photo.imageUri, it.imageUri) }
+        return apply(cityName) { engine.jailbreak(it, myId(), photo, clock(), score) }
+    }
 
-    override suspend fun captureFlag(cityName: String, photo: PhotoEvidence) =
-        apply(cityName) { engine.captureFlag(it, myId(), photo, clock()) }
+    override suspend fun captureFlag(cityName: String, photo: PhotoEvidence): Verdict {
+        val ref = enemyOf(cityName)?.let { (g, t) -> g.flags[t]?.photo }
+        val score = ref?.let { matcher?.similarity(photo.imageUri, it.imageUri) }
+        return apply(cityName) { engine.captureFlag(it, myId(), photo, clock(), score) }
+    }
+
+    /** The current game and the team opposing me, for looking up what I'm photographing. */
+    private fun enemyOf(cityName: String) = slot(cityName).value?.let { g -> g.players[myId()]?.let { g to it.team.opponent } }
 
     override suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence): Verdict {
         // Report window from where the target stands to the jail they must reach.
@@ -186,7 +213,7 @@ class InMemoryBackend(
         val from = g?.lastFix?.get(target)?.point
         val jail = g?.players?.get(target)?.let { g.jails[it.team.opponent] }?.location
         val window = if (from != null && jail != null) {
-            JailRules.reportWindow(travel.travelMs(from, jail, clock()), weather.at(from, clock()))
+            JailRules.reportWindow(travel.travelMs(from, jail, clock()))
         } else GameRules.HOUR
         return apply(cityName) { engine.tag(it, myId(), target, photo, clock(), bleRegistry, window) }
     }
