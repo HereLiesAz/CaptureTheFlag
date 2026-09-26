@@ -23,6 +23,7 @@ import java.io.File
  * PORT=7447 DATA_DIR=./node-data ARCHIVE=~/GoogleDrive/ctf-archive ARCHIVE_SYNC=external ./gradlew :node:run
  * REFEREES=<pubkey>,<pubkey>,... ./gradlew :node:run     # the shared referee roster
  * VOSK_MODEL=/path/to/vosk-model-small-en-us-0.15 ...    # hear the challenge (needs ffmpeg)
+ * PEERS=wss://node-b.example,wss://node-c.example ...     # follow other nodes' events and media
  * ~~~
  */
 fun main() = runBlocking {
@@ -42,15 +43,20 @@ fun main() = runBlocking {
     val cities = archive?.let { SurveyCache(it, OnboardedDirectory(surveyor)) } ?: OnboardedDirectory(surveyor)
     // Every node must list the same roster: panels are drawn from it. Alone, a node is its own panel of one.
     val roster = System.getenv("REFEREES")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)?.plus(keys.pub)?.distinct() ?: listOf(keys.pub)
-    val media = MediaStore(File(dir, "media"))
+    // PEERS: other nodes' relay addresses (wss://…), comma-separated. Their events and media reach this one.
+    val peers = System.getenv("PEERS")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty).orEmpty()
+        .let { Peers(it, store, io.ktor.client.HttpClient(io.ktor.client.engine.cio.CIO) { install(io.ktor.client.plugins.websocket.WebSockets) }, this) }
+    val media = MediaStore(File(dir, "media"), elsewhere = peers::fetch)
     // VOSK_MODEL: a Vosk model directory (alphacephei.com/vosk/models), for hearing the challenge. Needs ffmpeg.
     val ears = System.getenv("VOSK_MODEL")?.let { VoskEars(File(it)) }
-    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::read, ears = ears))
+    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::get, ears = ears))
     referee.restore()
 
     println("node ${keys.pub} on ws://0.0.0.0:$port/ (media at /media/) with ${store.size()} events" + (archive?.let { ", archiving to ${it.root}" } ?: ""))
 
     launch { store.live.collect { referee.accept(it); archive?.record(it) } }
+    // A week back is every live round, and then some.
+    peers.start(since = System.currentTimeMillis() / 1000 - 7 * 24 * 3600)
     launch { while (true) { delay(BATCH_EVERY_MS); referee.flush() } }
     archive?.let { a -> launch { while (true) { delay(ARCHIVE_EVERY_MS); a.sync() } } }
 

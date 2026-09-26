@@ -39,6 +39,7 @@ import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val PANEL_TURNS = 6
@@ -434,6 +435,44 @@ class NodeTest {
         assertTrue(right.said, "heard: ${right.transcript}")
         val wrong = ears.heard(listOf(segment.readBytes()), listOf("walnut", "zebra"))!!
         assertFalse(wrong.said, "heard: ${wrong.transcript}")
+    }
+
+    @Test fun aNodeFollowsItsPeersEventsAndMedia() = testApplication {
+        // Node B: a real relay and media store.
+        val bEvents = EventStore()
+        val bMedia = MediaStore(createTempDirectory("b").toFile())
+        install(WebSockets)
+        routing { relay(bEvents); media(bMedia) }
+        startApplication()
+        val someone = Keys.generate()
+        val before = someone.sign(Kinds.ACTION, "{}", listOf(listOf("g", "g1")))
+        bEvents.add(before)
+        val segment = ByteArray(3_000) { (it * 7).toByte() }
+        bMedia.write(Media.sha(segment), segment)
+
+        // Node A follows B.
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob())
+        try {
+            val aEvents = EventStore()
+            val peers = Peers(listOf("/"), aEvents, createClient { install(ClientWebSockets) }, scope)
+            val aMedia = MediaStore(createTempDirectory("a").toFile(), elsewhere = peers::fetch)
+            peers.start(since = 0)
+            suspend fun eventually(what: String, check: suspend () -> Boolean) {
+                kotlinx.coroutines.withTimeoutOrNull(10_000) { while (!check()) kotlinx.coroutines.delay(50) } ?: error("never: $what")
+            }
+            eventually("B's history reaches A") { aEvents.query(listOf(Filter(ids = setOf(before.id)))).isNotEmpty() }
+            val after = someone.sign(Kinds.ACTION, "{\"late\":1}", listOf(listOf("g", "g1")))
+            bEvents.add(after)
+            eventually("and B's new events, as they happen") { aEvents.query(listOf(Filter(ids = setOf(after.id)))).isNotEmpty() }
+
+            // A segment uploaded to B: A fetches it, checks it against its name, and keeps it.
+            assertFalse(aMedia.has(Media.sha(segment)))
+            assertTrue(aMedia.get(Media.sha(segment))!!.contentEquals(segment))
+            assertTrue(aMedia.has(Media.sha(segment)), "kept for next time")
+            assertNull(aMedia.get(Media.sha(byteArrayOf(1, 2, 3))), "nobody has it")
+        } finally {
+            scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        }
     }
 
     @Test fun nip44MatchesTheOfficialVectors() {

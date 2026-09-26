@@ -14,6 +14,9 @@ dependencies {
     implementation("io.ktor:ktor-server-core:3.6.0")
     implementation("io.ktor:ktor-server-netty:3.6.0")
     implementation("io.ktor:ktor-server-websockets:3.6.0")
+    // Following peer nodes: their relays and media stores.
+    implementation("io.ktor:ktor-client-cio:3.6.0")
+    implementation("io.ktor:ktor-client-websockets:3.6.0")
     // Offline speech recognition, for hearing the challenge in stream audio.
     implementation("com.alphacephei:vosk:0.3.45")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
