@@ -18,14 +18,14 @@ import com.hereliesaz.capturetheflag.net.ReviewReport.Result
  * ruling rests on. The stream stands unless a check fails.
  *
  * [matcher] scores the final still against the leader's registration photo, when this node
- * runs one. [media] is this node's store: the stream's segments are checked against the hashes
+ * runs one. [media] is this node's store, which fetches from its peers what it lacks: the stream's segments are checked against the hashes
  * sent live. [ears] listens for the challenge in the audio, on a node with a speech model.
  */
 class StreamJudge(
     private val referee: String,
     private val matcher: PhotoMatcher? = null,
     /** This node's media store, by hash. */
-    private val media: (String) -> ByteArray? = { null },
+    private val media: suspend (String) -> ByteArray? = { null },
     /** Speech recognition, for the challenge. Null on a node without a speech model. */
     private val ears: Ears? = null,
 ) {
@@ -106,23 +106,23 @@ class StreamJudge(
         val window = (GameRules.STREAM_CHALLENGE_WINDOW / SEGMENT_MS + 2).toInt()
         val wanted = s.chunks.takeLast(window)
         val segments = wanted.mapNotNull { media(it) }
-        if (segments.size < wanted.size) return Check(name, Result.NOT_RUN, "${wanted.size - segments.size} of ${wanted.size} segments around the winning frame aren't on this node")
+        if (segments.size < wanted.size) return Check(name, Result.NOT_RUN, "${wanted.size - segments.size} of ${wanted.size} segments around the winning frame couldn't be found on this node or its peers")
         val h = e.heard(segments, words) ?: return Check(name, Result.NOT_RUN, "The audio couldn't be read")
         return Check(name, if (h.said) Result.PASS else Result.FAIL,
             if (h.said) "Heard \"${s.challenge}\"" else "Listened for \"${s.challenge}\"; heard ${h.transcript.ifBlank { "neither word" }.let { "\"$it\"" }}")
     }
     /**
-     * Every segment the phone reported live, fetched and hashed again. The store names files by
-     * their hash, so a segment that's here is the segment that was reported; one that isn't may
-     * have gone to another node.
+     * Every segment the phone reported live, fetched (from a peer if it went to another node) and
+     * hashed again. Files are named by their hash, so a segment found is the segment reported; one
+     * no node has is missing footage.
      */
-    private fun integrity(s: LiveStream): Check {
+    private suspend fun integrity(s: LiveStream): Check {
         if (s.chunks.isEmpty()) return Check("Video matches the live hashes", Result.FAIL, "No segments were reported")
         val here = s.chunks.count { c -> media(c)?.let { Media.sha(it) == c } == true }
         return when (here) {
             s.chunks.size -> Check("Video matches the live hashes", Result.PASS, "All ${s.chunks.size} segments here, each matching the hash sent live")
-            0 -> Check("Video matches the live hashes", Result.NOT_RUN, "None of the ${s.chunks.size} segments reached this node")
-            else -> Check("Video matches the live hashes", Result.NOT_RUN, "$here of ${s.chunks.size} segments reached this node; the rest may be on another")
+            0 -> Check("Video matches the live hashes", Result.NOT_RUN, "None of the ${s.chunks.size} segments could be found on this node or its peers")
+            else -> Check("Video matches the live hashes", Result.NOT_RUN, "$here of ${s.chunks.size} segments found; the rest are on no node this one can reach")
         }
     }
 
