@@ -88,9 +88,16 @@ data class Evidence(
     val direction: Double? = null,
     val pose: Pose? = null,
     val ble: List<Sighting> = emptyList(),
+    /** The phone's hardware key vouching for everything above. See KeyAttestation on the node. */
+    val att: Attestation? = null,
 ) {
     @Serializable data class Pose(val azimuth: Double, val pitch: Double, val roll: Double, val at: Long)
     @Serializable data class Sighting(val token: String, val at: Long, val rssi: Int)
+    /** [chain]: base64 DER certificates, leaf first. [sig]: the leaf key's signature over [signedBytes]. */
+    @Serializable data class Attestation(val chain: List<String>, val sig: String)
+
+    /** What the hardware key signs: this evidence without its attestation. */
+    fun signedBytes(): ByteArray = Nostr.json.encodeToString(serializer(), copy(att = null)).toByteArray()
 
     fun toModel() = PhotoEvidence(
         imageUri = image,

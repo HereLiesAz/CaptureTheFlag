@@ -57,6 +57,8 @@ class NodeBackend(
     private val media: MediaClient? = null,
     /** Reads a photo this phone took, by the reference the platform gave it. */
     private val read: suspend (String) -> ByteArray? = { null },
+    /** Signs evidence with the phone's attested hardware key; null where there's none (tests, the JVM). */
+    private val attest: (suspend (ByteArray) -> Evidence.Attestation?)? = null,
 ) : GameBackend {
     private val _me = MutableStateFlow<User?>(null)
     override val me: StateFlow<User?> = _me
@@ -208,10 +210,10 @@ class NodeBackend(
     override suspend fun appointCoCaptains(cityName: String, picks: Set<PlayerId>) = act(cityName, Action.CoCaptains(picks))
 
     override suspend fun placeFlag(cityName: String, venueName: String, kind: FlagVenueKind, address: String, venue: GeoPoint, photo: PhotoEvidence) =
-        act(cityName, Action.PlaceFlag(venueName, kind, address, venue.lat, venue.lng, stored(photo).dto()))
+        act(cityName, Action.PlaceFlag(venueName, kind, address, venue.lat, venue.lng, evidence(photo)))
 
     override suspend fun placeJail(cityName: String, venueName: String, address: String, venue: GeoPoint, photo: PhotoEvidence) =
-        act(cityName, Action.PlaceJail(venueName, address, venue.lat, venue.lng, stored(photo).dto()))
+        act(cityName, Action.PlaceJail(venueName, address, venue.lat, venue.lng, evidence(photo)))
 
     override suspend fun goLive(cityName: String, purpose: StreamPurpose, fix: LocationFix) =
         act(cityName, Action.GoLive("s-" + ByteArray(8).also { SecureRandom().nextBytes(it) }.toHex(), purpose, fix.dto()))
@@ -242,9 +244,15 @@ class NodeBackend(
         return out
     }
 
-    override suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence) = act(cityName, Action.EndStream(streamId, stored(photo).dto()))
+    override suspend fun endStream(cityName: String, streamId: String, photo: PhotoEvidence) = act(cityName, Action.EndStream(streamId, evidence(photo)))
     override suspend fun dispute(cityName: String, streamId: String, reason: String) = act(cityName, Action.Dispute(streamId, reason))
-    override suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence) = act(cityName, Action.Tag(target, stored(photo).dto()))
+    override suspend fun tag(cityName: String, target: PlayerId, photo: PhotoEvidence) = act(cityName, Action.Tag(target, evidence(photo)))
+
+    /** A photo as sent: stored, then signed by the hardware key. */
+    private suspend fun evidence(photo: PhotoEvidence): Evidence {
+        val e = stored(photo).dto()
+        return attest?.invoke(e.signedBytes())?.let { e.copy(att = it) } ?: e
+    }
 
     /**
      * An evidence photo, uploaded encrypted: the node keeps ciphertext, and the key rides inside
