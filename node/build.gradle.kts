@@ -28,4 +28,6 @@ dependencies {
     testImplementation("io.ktor:ktor-server-test-host:3.6.0")
     testImplementation("io.ktor:ktor-client-websockets:3.6.0")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+    // Minting stand-in attestation chains.
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.86")
 }

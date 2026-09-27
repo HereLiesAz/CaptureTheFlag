@@ -18,6 +18,9 @@ import com.hereliesaz.capturetheflag.platform.AndroidPlatformServices
 import com.hereliesaz.capturetheflag.platform.Identity
 import kotlinx.coroutines.launch
 import com.hereliesaz.capturetheflag.ui.App
+import com.hereliesaz.capturetheflag.platform.HardwareKey
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -30,6 +33,7 @@ class MainActivity : ComponentActivity() {
             NodeBackend(
                 identity.keys, RelayClient.open(url, lifecycleScope), lifecycleScope,
                 media = MediaClient.open(url), read = platform::readMedia,
+                attest = HardwareKey(identity.keys).let { k -> { bytes -> withContext(Dispatchers.IO) { k.sign(bytes) } } },
             ).also { node ->
                 identity.profile?.let { (name, selfie) -> lifecycleScope.launch { node.register(name, selfie) } }
                 lifecycleScope.launch { node.me.collect { u -> u?.let { identity.profile = it.displayName to (it.selfieUrl ?: "") } } }

@@ -24,6 +24,7 @@ import java.io.File
  * REFEREES=<pubkey>,<pubkey>,... ./gradlew :node:run     # the shared referee roster
  * VOSK_MODEL=/path/to/vosk-model-small-en-us-0.15 ...    # hear the challenge (needs ffmpeg)
  * PEERS=wss://node-b.example,wss://node-c.example ...     # follow other nodes' events and media
+ * ATTESTATION=off ...                                    # accept evidence from emulators and rooted phones (development only)
  * PUBLIC_URL=wss://node-a.example ...                    # announce this node; the roster's announced nodes are followed too
  * ~~~
  */
@@ -52,7 +53,8 @@ fun main() = runBlocking {
     val media = MediaStore(File(dir, "media"), elsewhere = peers::fetch)
     // VOSK_MODEL: a Vosk model directory (alphacephei.com/vosk/models), for hearing the challenge. Needs ffmpeg.
     val ears = System.getenv("VOSK_MODEL")?.let { VoskEars(File(it)) }
-    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::get, ears = ears))
+    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::get, ears = ears),
+        attestation = if (System.getenv("ATTESTATION") == "off") null else KeyAttestation())
     referee.restore()
 
     println("node ${keys.pub} on ws://0.0.0.0:$port/ (media at /media/) with ${store.size()} events" + (archive?.let { ", archiving to ${it.root}" } ?: ""))

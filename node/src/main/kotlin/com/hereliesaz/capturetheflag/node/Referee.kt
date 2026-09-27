@@ -51,6 +51,8 @@ class Referee(
     private val cities: CityDirectory,
     private val roster: List<String> = listOf(keys.pub),
     private val judge: StreamJudge = StreamJudge(keys.pub),
+    /** Checks evidence came off a genuine phone. Null accepts unattested evidence (tests, development). */
+    private val attestation: KeyAttestation? = null,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private class Round(val open: Event, val id: String, val city: String, val panel: List<String>) {
@@ -301,6 +303,11 @@ class Referee(
         r.lastLook = b.at
     }
 
+    private fun unattested(a: Action, who: String): String? {
+        val photo = when (a) { is Action.PlaceFlag -> a.photo; is Action.PlaceJail -> a.photo; is Action.EndStream -> a.photo; is Action.Tag -> a.photo; else -> return null }
+        return attestation?.check(photo, who)
+    }
+
     /**
      * One player event, already decrypted to [body], as an engine call. Null for events that
      * don't reach the engine (bookkeeping only).
@@ -310,7 +317,10 @@ class Referee(
         return when (e.kind) {
             Kinds.POSITION -> engine.reportLocation(g, who, Nostr.json.decodeFromString(Position.serializer(), body).fix())
             Kinds.BLE_KEY -> { r.bleKeys[who] = body.hex(); r.hold(Secret("ble", who, null, body, salt(e, body))); null }
-            Kinds.ACTION -> when (val a = Nostr.json.decodeFromString(Action.serializer(), body)) {
+            Kinds.ACTION -> when (val a = Nostr.json.decodeFromString(Action.serializer(), body).also { a ->
+                // Evidence first: a photo off an unattested phone is refused before the engine sees it.
+                unattested(a, who)?.let { return Transition(g, Verdict.Rejected(it)) }
+            }) {
                 is Action.Open -> null
                 is Action.Join -> engine.join(g, User(who, a.name, a.selfie))
                 is Action.CoCaptains -> engine.appointCoCaptains(g, who, a.picks)
