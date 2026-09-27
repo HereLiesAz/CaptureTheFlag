@@ -386,6 +386,22 @@ class NodeTest {
             eventually("chat arrives") { bo.messages(com.hereliesaz.capturetheflag.chat.Channel.City(seen.city.id)).value.any { it.fromName == "Ana" } }
             // Referees' awards and radio reach the phone too.
             eventually("radio") { ana.commentary("New Orleans").value.isNotEmpty() }
+
+            // Team chat goes through the referees, who hand it to each teammate: here, Ana herself.
+            val room = com.hereliesaz.capturetheflag.chat.Channel.TeamRoom(seen.id, seen.players.getValue(ana.me.value!!.id).team)
+            assertEquals(Verdict.Valid, ana.send(room, "Flag's under the oak"))
+            eventually("team chat comes back through the panel") { ana.messages(room).value.any { it.body == "Flag's under the oak" } }
+            // Straight from a player, around the referees: ignored.
+            val sneak = Keys.generate()
+            val inner = sneak.sign(Kinds.TEAM_CHAT, "{\"channel\":\"${room.key}\",\"text\":\"psst\"}")
+            store.add(sneak.sign(Kinds.TEAM_CHAT, Nip44.seal(Nostr.json.encodeToString(Event.serializer(), inner), sneak, ana.me.value!!.id), listOf(listOf("p", ana.me.value!!.id))))
+            kotlinx.coroutines.delay(300)
+            assertTrue(ana.messages(room).value.none { it.body == "psst" })
+
+            // Highlights ride the referees' outcomes.
+            val moment = com.hereliesaz.capturetheflag.model.Highlight(com.hereliesaz.capturetheflag.model.HighlightKind.NEAR_MISS, ana.me.value!!.id, null, seen.id, seen.city.id, now)
+            store.add(node.sign(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(99_999, emptyMap(), emptyList(), emptyList(), "Active", listOf(moment))), listOf(listOf("g", seen.id))))
+            eventually("highlights reach the phone") { moment in ana.highlights.value }
         } finally {
             scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
         }

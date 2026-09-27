@@ -33,8 +33,13 @@ object Kinds {
     const val NODE = 34009
     /** City chat: a plain public note, tagged `c`. */
     const val NOTE = 1
-    /** Team room or DM: one copy per teammate, NIP-44 to each (tagged `p`). */
+    /**
+     * Team room or DM, as delivered: the sender's signed [CHAT] message, NIP-44 from a referee to
+     * one reader (tagged `p`). Phones take these from the panel only.
+     */
     const val TEAM_CHAT = 36001
+    /** Team room or DM, as sent: [Sealed] to the panel, which checks nobody is cut off and forwards it. */
+    const val CHAT = 36002
     /** A player's profile: display name and selfie. */
     const val PROFILE = 0
     /** A victory-lap segment's hash (tagged `s` stream, `g`, `c`): video for viewers, after the referees' footage. */
@@ -122,6 +127,8 @@ data class Outcome(
     val awards: List<AwardDto>,
     val notices: List<String>,
     val phase: String,
+    /** Moments for careers and rivalries. Secret ones (decoys, vanishings…) are held until the round ends. */
+    val highlights: List<com.hereliesaz.capturetheflag.model.Highlight> = emptyList(),
 ) {
     @Serializable data class AwardDto(val user: String, val points: Long, val reason: String)
 }

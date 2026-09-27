@@ -1,6 +1,8 @@
 package com.hereliesaz.capturetheflag.node
 
 import com.hereliesaz.capturetheflag.net.*
+import com.hereliesaz.capturetheflag.chat.Channel
+import com.hereliesaz.capturetheflag.chat.ChatAccess
 import com.hereliesaz.capturetheflag.commentary.Commentator
 import com.hereliesaz.capturetheflag.data.CityDirectory
 import com.hereliesaz.capturetheflag.engine.GameEngine
@@ -71,6 +73,10 @@ class Referee(
         val bleKeys = mutableMapOf<PlayerId, ByteArray>()
         var lastLook: Long? = null
         val secrets = mutableListOf<Secret>()
+        /** Team chat waiting for a cut-off reader to get home, by reader. */
+        val waiting = mutableMapOf<PlayerId, MutableList<String>>()
+        /** Secret highlights, aired when the round ends. */
+        val held = mutableListOf<com.hereliesaz.capturetheflag.model.Highlight>()
         val uncommitted = mutableListOf<Secret>()
         /** "stream|review" → referee → its vote, as final batches deliver them. */
         val votes = mutableMapOf<String, MutableMap<String, Boolean>>()
@@ -100,8 +106,46 @@ class Referee(
 
     /** Takes in any event from the network and moves every game as far as it can go. */
     suspend fun accept(e: Event) = lock.withLock {
+        if (e.kind == Kinds.CHAT) return@withLock forward(e)
         ingest(e)
         advance(live = true)
+    }
+
+    /**
+     * Team chat, through the referees: that's what makes the cut-off real. The sender's own signed
+     * message goes, as is, to each teammate who may read it now; a jailed sender, or one on enemy
+     * ground, gets nothing out, and a cut-off reader gets it once home. Referees can hold a message
+     * back but not forge one: readers check the sender's signature.
+     */
+    private suspend fun forward(e: Event) {
+        val r = rounds[e.tag("g") ?: return] ?: return
+        val g = r.game ?: return
+        val inner = Sealed.open(e.content, keys, e.pubkey)
+            ?.let { runCatching { Nostr.json.decodeFromString(Event.serializer(), it) }.getOrNull() }
+            ?.takeIf { it.valid() && it.pubkey == e.pubkey && it.kind == Kinds.TEAM_CHAT } ?: return
+        val channel = runCatching { Nostr.json.parseToJsonElement(inner.content) as JsonObject }.getOrNull()
+            ?.get("channel")?.jsonPrimitive?.content ?: return
+        val me = g.players[e.pubkey] ?: return
+        val parts = channel.split(':')
+        val to = when {
+            parts.size == 3 && parts[0] == "team" && parts[1] == g.id && parts[2] == me.team.name -> g.team(me.team).map { it.id }
+            parts.size == 4 && parts[0] == "dm" && parts[1] == g.id &&
+                ChatAccess.canUse(e.pubkey, Channel.Direct.of(g.id, parts[2], parts[3]), g) -> listOf(parts[2], parts[3])
+            else -> return
+        }
+        if (ChatAccess.blackedOut(e.pubkey, g)) return
+        val text = Nostr.json.encodeToString(Event.serializer(), inner)
+        for (who in to) {
+            if (ChatAccess.blackedOut(who, g)) r.waiting.getOrPut(who) { mutableListOf() } += text
+            else publish(Kinds.TEAM_CHAT, Nip44.seal(text, keys, who), r.id, listOf(listOf("p", who)))
+        }
+    }
+
+    /** Hands over the chat that waited while each reader was cut off, now they aren't. */
+    private suspend fun release(r: Round, g: Game) {
+        for (who in r.waiting.keys.filterNot { ChatAccess.blackedOut(it, g) }) {
+            r.waiting.remove(who)!!.forEach { publish(Kinds.TEAM_CHAT, Nip44.seal(it, keys, who), r.id, listOf(listOf("p", who))) }
+        }
     }
 
     /**
@@ -277,9 +321,13 @@ class Referee(
         }
         r.game = total.game
         ledger += total.awards
+        r.held += total.highlights.filter { it.secret }
+        val ended = before.phase !is GamePhase.Ended && total.game.phase is GamePhase.Ended
+        val aired = total.highlights.filterNot { it.secret } + (if (ended) r.held.toList().also { r.held.clear() } else emptyList())
         if (live) review(r, total.game)
+        if (live) release(r, total.game)
         if (live) publish(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(
-            b.seq, verdicts, total.awards.map { Outcome.AwardDto(it.user, it.points, it.reason) }, total.notices, total.game.phase::class.simpleName ?: "",
+            b.seq, verdicts, total.awards.map { Outcome.AwardDto(it.user, it.points, it.reason) }, total.notices, total.game.phase::class.simpleName ?: "", aired,
         )), r.id)
         if (!deliver) { r.uncommitted.clear(); return }
         for (p in total.pings) {
