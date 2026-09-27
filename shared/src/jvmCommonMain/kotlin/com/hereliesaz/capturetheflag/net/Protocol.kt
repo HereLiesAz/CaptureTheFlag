@@ -31,6 +31,14 @@ object Kinds {
     const val PUBLIC_VIEW = 34008
     /** A node saying where it can be reached: its relay address (wss://…) as the content, signed by the node. */
     const val NODE = 34009
+    /** One referee's photo-matcher score for one capture or jailbreak ([Match]). Batched like rulings. */
+    const val MATCH = 34010
+    /** One referee's vote to replace a silent panel member ([Replace]). Batched, so the swap lands at an agreed point. */
+    const val REPLACE = 34011
+    /** A referee bringing a newly drawn one up to speed ([Handover]), NIP-44 to it (tagged `p`). */
+    const val HANDOVER = 34012
+    /** The panel as it stands after a replacement ([PanelChange]). Phones take it from a quorum of the panel they knew. */
+    const val PANEL = 34013
     /** City chat: a plain public note, tagged `c`. */
     const val NOTE = 1
     /**
@@ -186,6 +194,27 @@ object Sealed {
 /** Content of a kind-32000 game.open: one per panel referee, each carrying its seed commitment. */
 @Serializable
 data class GameOpen(val open: String, val city: String, val deadline: Long, val panel: List<String>, val commit: String)
+
+/** Content of a kind-34010 match: how much [event]'s photo looks like the registered reference, 0 to 1. */
+@Serializable
+data class Match(val event: String, val score: Double)
+
+/** Content of a kind-34011 vote: [out] has gone silent; [into] is who the seed draws in its place. */
+@Serializable
+data class Replace(val out: String, val into: String)
+
+/**
+ * Content of a kind-34012 handover: everything a referee drawn mid-round needs to replay the
+ * round as the others did. [open] is the open request, [terms] each member's first and last
+ * batch, [bodies] the plaintext of every sealed player event batched so far (id, body).
+ * The newcomer takes it once a quorum of the panel sent the same one.
+ */
+@Serializable
+data class Handover(val open: Event, val city: String, val panel: List<String>, val terms: Map<String, List<Long>>, val seed: String, val bodies: List<List<String>>)
+
+/** Content of a kind-34013 panel change. */
+@Serializable
+data class PanelChange(val panel: List<String>)
 
 /** Content of a kind-34005 ruling: one referee's public vote on one review of a disputed stream. */
 @Serializable
