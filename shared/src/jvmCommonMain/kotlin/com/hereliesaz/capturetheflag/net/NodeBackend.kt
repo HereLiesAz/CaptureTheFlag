@@ -43,9 +43,7 @@ import java.util.concurrent.ConcurrentHashMap
  * panel, and waits for the panel's `outcome` to say how it went. What it shows is the view the
  * referees sealed to this player after the latest batch, never more.
  *
- * Not yet: highlights (the referees don't publish them), city onboarding progress (the node
- * surveys on its own), and team chat through the referees (it's sealed teammate to teammate,
- * so the cut-off is only enforced here in the app).
+ * Not yet: city onboarding progress (the node surveys on its own).
  */
 class NodeBackend(
     private val keys: Keys,
@@ -76,7 +74,8 @@ class NodeBackend(
     private val outcomes = ConcurrentHashMap<String, List<Award>>()
     private val _ledger = MutableStateFlow<List<Award>>(emptyList())
     override val ledger: StateFlow<List<Award>> = _ledger
-    override val highlights: StateFlow<List<Highlight>> = MutableStateFlow(emptyList())
+    private val _highlights = MutableStateFlow<List<Highlight>>(emptyList())
+    override val highlights: StateFlow<List<Highlight>> = _highlights
     private val names = ConcurrentHashMap<PlayerId, String>()
     private val bleKeys = ConcurrentHashMap<String, ByteArray>()
     private val seen = ConcurrentHashMap.newKeySet<String>()
@@ -118,6 +117,7 @@ class NodeBackend(
                 val city = games.entries.firstOrNull { it.value.value?.id == game }?.key ?: ""
                 if (outcomes.putIfAbsent("$game|${o.seq}", o.awards.map { Award(it.user, city, game, it.points, it.reason, e.created_at * 1000) }) == null) {
                     _ledger.value = outcomes.values.flatten().sortedBy { it.at }
+                    if (o.highlights.isNotEmpty()) _highlights.update { (it + o.highlights).distinct().sortedBy { h -> h.at } }
                 }
             }
             Kinds.PING -> pingBus.emit(Pings.decode(Nip44.open(e.content, keys, e.pubkey)))
@@ -127,8 +127,12 @@ class NodeBackend(
             }
             Kinds.NOTE -> e.tag("c")?.let { city -> post(Channel.City(city).key, e.pubkey, e.content, e.created_at) }
             Kinds.TEAM_CHAT -> {
-                val m = Nostr.json.decodeFromString(TeamMessage.serializer(), Nip44.open(e.content, keys, e.pubkey))
-                post(m.channel, e.pubkey, m.text, e.created_at)
+                // From a referee on one of our panels only: anyone else would be going around the cut-off.
+                if (rounds.values.none { e.pubkey in it.panel }) return
+                val inner = Nostr.json.decodeFromString(Event.serializer(), Nip44.open(e.content, keys, e.pubkey))
+                if (!inner.valid() || inner.kind != Kinds.TEAM_CHAT) return
+                val m = Nostr.json.decodeFromString(TeamMessage.serializer(), inner.content)
+                post(m.channel, inner.pubkey, m.text, inner.created_at)
             }
             Kinds.LAP -> {
                 val stream = e.tag("s") ?: return
@@ -306,14 +310,12 @@ class NodeBackend(
         when (channel) {
             is Channel.City -> relay.publish(keys.sign(Kinds.NOTE, body.trim(), listOf(listOf("c", channel.city))))
             else -> {
-                val g = game!!
-                val to = when (channel) {
-                    is Channel.Direct -> setOf(channel.a, channel.b)
-                    else -> g.team(g.players.getValue(me.id).team).map { it.id }.toSet()
-                }
+                val round = rounds[game!!.id] ?: return Verdict.Rejected("No referees yet")
+                // Signed by us, sealed to the referees: they check nobody's cut off, then hand it to
+                // each teammate who may read it, ourselves included, so our own thread shows it too.
                 val text = Nostr.json.encodeToString(TeamMessage.serializer(), TeamMessage(channel.key, body.trim()))
-                // One sealed copy per teammate, ourselves included, so our own thread shows it too.
-                for (who in to) relay.publish(keys.sign(Kinds.TEAM_CHAT, Nip44.seal(text, keys, who), listOf(listOf("p", who))))
+                val message = Nostr.json.encodeToString(Event.serializer(), keys.sign(Kinds.TEAM_CHAT, text))
+                relay.publish(keys.sign(Kinds.CHAT, Sealed.forPanel(message, keys, round.panel), listOf(listOf("g", round.id))))
             }
         }
         return Verdict.Valid
