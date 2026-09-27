@@ -475,6 +475,33 @@ class NodeTest {
         }
     }
 
+    @Test fun aNodeFindsTheRostersNodesByTheirAnnouncements() = testApplication {
+        // Node B: a real relay, holding one event.
+        val bEvents = EventStore()
+        install(WebSockets)
+        routing { relay(bEvents) }
+        startApplication()
+        val b = Keys.generate()
+        val before = Keys.generate().sign(Kinds.ACTION, "{}", listOf(listOf("g", "g1")))
+        bEvents.add(before)
+
+        // Node A has no seeds; it learns of B from B's announcement, arriving by way of some other peer.
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob())
+        try {
+            val aEvents = EventStore()
+            val peers = Peers(emptyList(), aEvents, createClient { install(ClientWebSockets) }, scope, roster = setOf(b.pub), acceptable = { true })
+            peers.start(since = 0)
+            aEvents.add(Keys.generate().sign(Kinds.NODE, "/elsewhere"))
+            aEvents.add(b.sign(Kinds.NODE, "/"))
+            kotlinx.coroutines.withTimeoutOrNull(10_000) {
+                while (aEvents.query(listOf(Filter(ids = setOf(before.id)))).isEmpty()) kotlinx.coroutines.delay(50)
+            } ?: error("A never followed B")
+            assertEquals(setOf("/"), peers.urls, "a stranger's announcement is ignored")
+        } finally {
+            scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        }
+    }
+
     @Test fun nip44MatchesTheOfficialVectors() {
         // github.com/paulmillr/nip44 nip44.vectors.json
         val v = Nostr.json.parseToJsonElement(javaClass.getResource("/nip44.vectors.json")!!.readText()).jsonObject["v2"]!!.jsonObject

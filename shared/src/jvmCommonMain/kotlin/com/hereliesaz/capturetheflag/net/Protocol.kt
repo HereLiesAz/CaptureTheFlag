@@ -29,6 +29,8 @@ object Kinds {
     const val REPORT = 34006
     const val VIEW = 34007
     const val PUBLIC_VIEW = 34008
+    /** A node saying where it can be reached: its relay address (wss://…) as the content, signed by the node. */
+    const val NODE = 34009
     /** City chat: a plain public note, tagged `c`. */
     const val NOTE = 1
     /** Team room or DM: one copy per teammate, NIP-44 to each (tagged `p`). */

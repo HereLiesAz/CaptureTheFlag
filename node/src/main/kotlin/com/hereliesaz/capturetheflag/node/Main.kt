@@ -24,6 +24,7 @@ import java.io.File
  * REFEREES=<pubkey>,<pubkey>,... ./gradlew :node:run     # the shared referee roster
  * VOSK_MODEL=/path/to/vosk-model-small-en-us-0.15 ...    # hear the challenge (needs ffmpeg)
  * PEERS=wss://node-b.example,wss://node-c.example ...     # follow other nodes' events and media
+ * PUBLIC_URL=wss://node-a.example ...                    # announce this node; the roster's announced nodes are followed too
  * ~~~
  */
 fun main() = runBlocking {
@@ -44,8 +45,10 @@ fun main() = runBlocking {
     // Every node must list the same roster: panels are drawn from it. Alone, a node is its own panel of one.
     val roster = System.getenv("REFEREES")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)?.plus(keys.pub)?.distinct() ?: listOf(keys.pub)
     // PEERS: other nodes' relay addresses (wss://…), comma-separated. Their events and media reach this one.
+    // One is enough: the roster's nodes announce themselves, and announced nodes are followed too.
+    val publicUrl = System.getenv("PUBLIC_URL")?.trim()?.takeIf { it.startsWith("wss://") }
     val peers = System.getenv("PEERS")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty).orEmpty()
-        .let { Peers(it, store, io.ktor.client.HttpClient(io.ktor.client.engine.cio.CIO) { install(io.ktor.client.plugins.websocket.WebSockets) }, this) }
+        .let { Peers(it, store, io.ktor.client.HttpClient(io.ktor.client.engine.cio.CIO) { install(io.ktor.client.plugins.websocket.WebSockets) }, this, roster.toSet(), publicUrl) }
     val media = MediaStore(File(dir, "media"), elsewhere = peers::fetch)
     // VOSK_MODEL: a Vosk model directory (alphacephei.com/vosk/models), for hearing the challenge. Needs ffmpeg.
     val ears = System.getenv("VOSK_MODEL")?.let { VoskEars(File(it)) }
@@ -57,6 +60,7 @@ fun main() = runBlocking {
     launch { store.live.collect { referee.accept(it); archive?.record(it) } }
     // A week back is every live round, and then some.
     peers.start(since = System.currentTimeMillis() / 1000 - 7 * 24 * 3600)
+    publicUrl?.let { peers.announce(keys, it) }
     launch { while (true) { delay(BATCH_EVERY_MS); referee.flush() } }
     archive?.let { a -> launch { while (true) { delay(ARCHIVE_EVERY_MS); a.sync() } } }
 
