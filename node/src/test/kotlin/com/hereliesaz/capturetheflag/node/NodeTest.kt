@@ -239,6 +239,49 @@ class NodeTest {
         assertTrue(net.live().all { it.equivocators.isEmpty() })
     }
 
+    @Test fun aSilentRefereeIsReplacedAndItsReplacementCatchesUp() = runTest {
+        val net = Network(6)
+        val players = (1..4).map { Keys.generate() }
+        net.send(action(players[0], Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.referees.firstNotNullOf { r -> r.games.keys.singleOrNull() }
+        val panel = net.referees.firstNotNullOf { it.panelOf(game) }
+        val spare = net.keys.indexOfFirst { it.pub !in panel }
+        assertEquals(5, panel.size)
+        assertNull(net.referees[spare].panelOf(game), "the sixth isn't on it")
+
+        // A referee can't play in its own game.
+        val sneaky = net.keys.first { it.pub in panel }
+        net.send(action(sneaky, Action.Join("Ref", "s"), game, panel = panel)); net.flush()
+        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", "s$i"), game, panel = panel)) }
+        net.flush()
+        net.now += GameRules.SIGNUP_WINDOW
+        repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
+        val on = net.referees.filter { it.panelOf(game) != null }
+        assertTrue(on.all { sneaky.pub !in it.games.getValue(game).players }, "the referee's join was refused")
+        assertIs<GamePhase.FlagPlacement>(on.first().games.getValue(game).phase)
+
+        // One goes silent for good. After ten minutes the rest vote it out; the seed draws the sixth in.
+        val silent = net.keys.indexOfFirst { it.pub in panel }
+        net.down += silent
+        net.now += Referee.SILENT_MS
+        repeat(PANEL_TURNS * 2) { net.flush(); net.now += Referee.LEADER_TURN_MS }
+        val now = net.referees[spare].panelOf(game)
+        assertNotNull(now, "the sixth was handed the round")
+        assertTrue(net.keys[spare].pub in now && net.keys[silent].pub !in now, "now=${now.map { k -> net.keys.indexOfFirst { it.pub == k } }} spare=$spare silent=$silent")
+        net.live().filter { it.panelOf(game) != null }.forEach { assertEquals(now, it.panelOf(game)) }
+        assertEquals(1, net.store.query(listOf(Filter(kinds = setOf(Kinds.PANEL)))).map { it.content }.distinct().size)
+
+        // It replays to the same game, and plays on with the others.
+        assertEquals(net.referees[(0 until 6).first { it != silent && it != spare }].games.getValue(game), net.referees[spare].games.getValue(game))
+        val cap = net.referees[spare].games.getValue(game).players.values.first { it.role == Role.CAPTAIN }
+        val later = action(players.first { it.pub == cap.id }, Action.CoCaptains(emptySet()), game, panel = now, at = net.now / 1000)
+        net.send(later)
+        repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
+        val outcomes = net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).filter { later.id in it.content }
+        assertTrue(net.keys[spare].pub in outcomes.map { it.pubkey }, "the newcomer ruled on it")
+        assertEquals(1, outcomes.map { it.content }.distinct().size, "and agreed")
+    }
+
     @Test fun aRefereeWhoSignsTwoBatchesIsCaught() = runTest {
         val net = Network(5)
         val p = Keys.generate()

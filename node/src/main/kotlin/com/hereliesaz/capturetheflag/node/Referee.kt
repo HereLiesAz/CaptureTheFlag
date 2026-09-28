@@ -12,6 +12,7 @@ import com.hereliesaz.capturetheflag.model.Award
 import com.hereliesaz.capturetheflag.model.Game
 import com.hereliesaz.capturetheflag.model.GamePhase
 import com.hereliesaz.capturetheflag.model.PlayerId
+import com.hereliesaz.capturetheflag.model.StreamPurpose
 import com.hereliesaz.capturetheflag.model.Territory
 import com.hereliesaz.capturetheflag.model.User
 import com.hereliesaz.capturetheflag.rules.BleTokenRegistry
@@ -55,10 +56,24 @@ class Referee(
     private val judge: StreamJudge = StreamJudge(keys.pub),
     /** Checks evidence came off a genuine phone. Null accepts unattested evidence (tests, development). */
     private val attestation: KeyAttestation? = null,
+    /** Reads a photo by its reference, decrypted. With it, this referee runs the photo matcher. */
+    private val photos: (suspend (String) -> ByteArray?)? = null,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
-    private class Round(val open: Event, val id: String, val city: String, val panel: List<String>) {
-        val quorum = panel.size / 2 + 1
+    private class Round(val open: Event, val id: String, val city: String, val first: List<String>) {
+        /** Who referees now. Starts as [first]; a silent member is swapped out by quorum vote. */
+        var panel = first
+        val quorum = first.size / 2 + 1
+        /** Each member's term, by batch sequence: first and last (inclusive). Signatures count only in term. */
+        val terms = first.associateWith { mutableListOf(1L, Long.MAX_VALUE) }.toMutableMap()
+        /** When each member last signed anything for this game, by this referee's clock. */
+        val lastHeard = mutableMapOf<String, Long>()
+        /** Members this referee has already voted to replace. */
+        val replacing = mutableSetOf<String>()
+        /** "out|into" → voters, as final batches deliver the votes. */
+        val swaps = mutableMapOf<String, MutableSet<String>>()
+        /** Plaintext handed over to a referee drawn mid-round, by event id; it can't open what was sealed before it came. */
+        var bodies: Map<String, String> = emptyMap()
         val commits = mutableMapOf<String, String>()
         val reveals = mutableMapOf<String, ByteArray>()
         var seed: ByteArray? = null
@@ -75,6 +90,13 @@ class Referee(
         val secrets = mutableListOf<Secret>()
         /** Team chat waiting for a cut-off reader to get home, by reader. */
         val waiting = mutableMapOf<PlayerId, MutableList<String>>()
+        /** Captures and jailbreaks waiting on matcher scores, by event id: when they arrived. */
+        val matchWait = mutableMapOf<String, Long>()
+        /** Who has sent a score for each event, and, once batched, the scores themselves. */
+        val matchers = mutableMapOf<String, MutableSet<String>>()
+        val scores = mutableMapOf<String, MutableMap<String, Double>>()
+        /** Every award made before this round opened, by quorum: what levels are priced from, all round. */
+        var frozen: List<Award>? = null
         /** Secret highlights, aired when the round ends. */
         val held = mutableListOf<com.hereliesaz.capturetheflag.model.Highlight>()
         val uncommitted = mutableListOf<Secret>()
@@ -83,7 +105,9 @@ class Referee(
         /** Reviews this referee has voted on, from its own published rulings. */
         val voted = mutableSetOf<String>()
 
-        fun final(seq: Long) = signed[seq].orEmpty().values.groupingBy { it }.eachCount().entries.firstOrNull { it.value >= quorum }?.key
+        fun serving(who: String, seq: Long) = terms[who]?.let { seq in it[0]..it[1] } == true
+        fun final(seq: Long) = signed[seq].orEmpty().filterKeys { serving(it, seq) }.values
+            .groupingBy { it }.eachCount().entries.firstOrNull { it.value >= quorum }?.key
     }
 
     private val rounds = mutableMapOf<String, Round>()
@@ -91,10 +115,13 @@ class Referee(
     private val early = mutableMapOf<String, MutableList<Event>>()
     private val playerEvents = mutableMapOf<String, MutableMap<String, Event>>()
     private val seen = mutableSetOf<String>()
-    private val ledger = mutableListOf<Award>()
     private val booth = Commentator(Random.Default)
     private val lock = Mutex()
     private val caught = mutableSetOf<String>()
+    /** Open requests waiting for their panel to be drawn. */
+    private val opening = mutableListOf<Pair<Event, String>>()
+    /** Handovers for rounds this node hasn't joined yet: game → sender → content. */
+    private val handovers = mutableMapOf<String, MutableMap<String, String>>()
 
     val games: Map<String, Game> get() = rounds.values.mapNotNull { r -> r.game?.let { r.id to it } }.toMap()
 
@@ -105,10 +132,41 @@ class Referee(
     fun panelOf(game: String): List<String>? = rounds[game]?.panel
 
     /** Takes in any event from the network and moves every game as far as it can go. */
-    suspend fun accept(e: Event) = lock.withLock {
-        if (e.kind == Kinds.CHAT) return@withLock forward(e)
-        ingest(e)
-        advance(live = true)
+    suspend fun accept(e: Event) {
+        lock.withLock {
+            if (e.kind == Kinds.CHAT) return forward(e)
+            ingest(e)
+            advance(live = true)
+        }
+        match(e)
+    }
+
+    /**
+     * The photo matcher, for captures and jailbreaks: scores the winning frame against the
+     * reference the leader registered, and publishes the score. Fetching and scoring happen
+     * outside the lock; nothing waits on this but the capture itself, and not for long.
+     */
+    private suspend fun match(e: Event) {
+        val read = photos ?: return
+        if (e.kind != Kinds.ACTION) return
+        val (r, shot, reference) = lock.withLock {
+            val r = rounds[e.tag("g") ?: return] ?: return
+            val g = r.game ?: return
+            val a = Sealed.open(e.content, keys, e.pubkey)?.let { runCatching { Nostr.json.decodeFromString(Action.serializer(), it) }.getOrNull() } as? Action.EndStream ?: return
+            val s = g.streams[a.stream] ?: return
+            val enemy = g.players[s.by]?.team?.opponent ?: return
+            val ref = when (s.purpose) {
+                StreamPurpose.CAPTURE -> g.flags[enemy]?.photo
+                StreamPurpose.JAILBREAK -> g.jails[enemy]?.photo
+            }?.imageUri ?: return
+            r.matchWait[e.id] = clock()
+            Triple(r, a.photo.image, ref)
+        }
+        val score = runCatching { Matcher.score(read(shot) ?: return, read(reference) ?: return) }.getOrNull() ?: return
+        lock.withLock {
+            publish(Kinds.MATCH, Nostr.json.encodeToString(Match.serializer(), Match(e.id, score)), r.id)
+            advance(live = true)
+        }
     }
 
     /**
@@ -141,6 +199,42 @@ class Referee(
         }
     }
 
+    /** The median of the panel's matcher scores for [event], once a quorum sent one; otherwise the check is skipped. */
+    private fun visualMatch(r: Round, event: String): Double? {
+        val s = r.scores[event]?.values?.sorted()?.takeIf { it.size >= r.quorum } ?: return null
+        return if (s.size % 2 == 1) s[s.size / 2] else (s[s.size / 2 - 1] + s[s.size / 2]) / 2
+    }
+
+    /**
+     * Every award that stood before [before] (unix seconds), across the network: for each batch,
+     * the outcome a quorum of that game's own panel signed. Read from signed events, not from what
+     * this node happened to referee, so every referee prices the same player the same way, and
+     * frozen at round open, so nothing that happens mid-round moves the price.
+     */
+    private suspend fun pastAwards(before: Long): List<Award> = standing(before).flatMap { s ->
+        s.outcome.awards.map { Award(it.user, s.open.city, s.game, it.points, it.reason, s.at) }
+    }
+
+    /** One batch's outcome as a quorum of its game's own panel signed it. */
+    private class Stood(val game: String, val open: GameOpen, val outcome: Outcome, val signers: List<String>, val at: Long)
+
+    /** Every outcome that stood before [before] (unix seconds), across the network. */
+    private suspend fun standing(before: Long): List<Stood> {
+        val panels = store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).filter { it.created_at < before }
+            .mapNotNull { e -> e.tag("g")?.let { g -> runCatching { Nostr.json.decodeFromString(GameOpen.serializer(), e.content) }.getOrNull()?.takeIf { e.pubkey in it.panel }?.let { g to it } } }
+            .toMap()
+        return store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).filter { it.created_at < before }
+            .groupBy { it.tag("g") to runCatching { Nostr.json.decodeFromString(Outcome.serializer(), it.content).seq }.getOrNull() }
+            .mapNotNull { (key, signed) ->
+                val (g, seq) = key
+                val open = panels[g] ?: return@mapNotNull null
+                if (seq == null) return@mapNotNull null
+                val stood = signed.filter { it.pubkey in open.panel }.distinctBy { it.pubkey }.groupBy { it.content }
+                    .entries.firstOrNull { it.value.size >= open.panel.size / 2 + 1 } ?: return@mapNotNull null
+                Stood(g!!, open, Nostr.json.decodeFromString(Outcome.serializer(), stood.key), stood.value.map { it.pubkey }, stood.value.minOf { it.created_at } * 1000)
+            }
+    }
+
     /** Hands over the chat that waited while each reader was cut off, now they aren't. */
     private suspend fun release(r: Round, g: Game) {
         for (who in r.waiting.keys.filterNot { ChatAccess.blackedOut(it, g) }) {
@@ -155,8 +249,10 @@ class Referee(
      */
     suspend fun flush() = lock.withLock {
         val now = clock()
-        for (r in rounds.values) {
+        for (r in rounds.values.toList()) {
             if (r.game == null) continue
+            watch(r)
+            if (keys.pub !in r.panel) continue
             val next = r.applied + 1
             if (r.signed[next]?.containsKey(keys.pub) == true) continue
             val attempt = (now - r.seqSince) / LEADER_TURN_MS
@@ -173,7 +269,7 @@ class Referee(
 
     /** Rebuilds every game this node referees from the store, publishing nothing. */
     suspend fun restore() = lock.withLock {
-        store.query(listOf(Filter(kinds = setOf(Kinds.ACTION, Kinds.POSITION, Kinds.BLE_KEY, Kinds.RULING, Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.BATCH))))
+        store.query(listOf(Filter(kinds = setOf(Kinds.ACTION, Kinds.POSITION, Kinds.BLE_KEY, Kinds.RULING, Kinds.MATCH, Kinds.REPLACE, Kinds.HANDOVER, Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.BATCH))))
             .sortedWith(compareBy({ it.created_at }, { it.id }))
             .forEach { ingest(it) }
         advance(live = false)
@@ -183,18 +279,30 @@ class Referee(
     private fun ingest(e: Event) {
         if (!seen.add(e.id)) return
         val game = e.tag("g")
+        // Anything a member signs for its game (a batch, an outcome, a score) says it's alive.
+        game?.let { rounds[it] }?.takeIf { e.pubkey in it.terms }?.lastHeard?.set(e.pubkey, clock())
         when (e.kind) {
             Kinds.ACTION, Kinds.POSITION, Kinds.BLE_KEY ->
                 if (game != null) playerEvents.getOrPut(game) { mutableMapOf() }[e.id] = e
                 else if (e.kind == Kinds.ACTION) {
                     val open = runCatching { Nostr.json.decodeFromString(Action.serializer(), e.content) }.getOrNull() as? Action.Open
-                    if (open != null) openRound(e, open.city)
+                    if (open != null) opening += e to open.city
                 }
+            // Scores are batched too, so every referee takes the same median.
+            Kinds.MATCH -> if (game != null) {
+                playerEvents.getOrPut(game) { mutableMapOf() }[e.id] = e
+                runCatching { Nostr.json.decodeFromString(Match.serializer(), e.content) }.getOrNull()
+                    ?.let { rounds[game]?.matchers?.getOrPut(it.event) { mutableSetOf() }?.add(e.pubkey) }
+            }
             // Rulings are ordered like player events, so every referee counts the same votes at the same point.
             Kinds.RULING -> if (game != null) {
                 playerEvents.getOrPut(game) { mutableMapOf() }[e.id] = e
                 if (e.pubkey == keys.pub) runCatching { Nostr.json.decodeFromString(Ruling.serializer(), e.content) }.getOrNull()
                     ?.let { rounds[game]?.voted?.add("${it.stream}|${it.review}") }
+            }
+            Kinds.REPLACE -> if (game != null) playerEvents.getOrPut(game) { mutableMapOf() }[e.id] = e
+            Kinds.HANDOVER -> if (game != null && e.tag("p") == keys.pub && rounds[game] == null) {
+                Nip44.runCatching { open(e.content, keys, e.pubkey) }.getOrNull()?.let { handovers.getOrPut(game) { mutableMapOf() }[e.pubkey] = it }
             }
             Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.BATCH -> {
                 if (game == null) return
@@ -205,13 +313,15 @@ class Referee(
     }
 
     /**
-     * An open request draws its panel from the roster by the request's own id, so every node
-     * draws the same one and nobody chooses. Rounds this node isn't on are none of its business.
+     * An open request draws its panel from the eligible pool, by the city's last seed and the
+     * request's own id, so every node draws the same one and nobody chooses. Rounds this node
+     * isn't on are none of its business.
      */
-    private fun openRound(e: Event, city: String) {
+    private suspend fun openRound(e: Event, city: String) {
         val key = city.trim().lowercase()
         if (rounds.values.any { it.city == key && it.game?.phase !is GamePhase.Ended }) return
-        val panel = roster.distinct().sortedBy { Nostr.sha256((it + e.id).toByteArray()).toHex() }.take(PANEL_SIZE)
+        val draw = lastSeed(key, e.created_at) + e.id
+        val panel = pool(e.created_at).sortedBy { Nostr.sha256((it + draw).toByteArray()).toHex() }.take(PANEL_SIZE)
         if (keys.pub !in panel) return
         val id = "g-" + e.id.take(16)
         val r = Round(e, id, key, panel).also { rounds[id] = it }
@@ -219,10 +329,10 @@ class Referee(
     }
 
     private fun ceremony(r: Round, e: Event) {
-        if (e.pubkey !in r.panel) return
+        if (e.pubkey !in r.first && e.pubkey !in r.terms) return
         when (e.kind) {
             Kinds.GAME_OPEN -> runCatching { Nostr.json.decodeFromString(GameOpen.serializer(), e.content) }.getOrNull()
-                ?.takeIf { it.open == r.open.id && it.panel == r.panel }
+                ?.takeIf { it.open == r.open.id && it.panel == r.first }
                 ?.let { r.commits.putIfAbsent(e.pubkey, it.commit) }
             Kinds.SEED_REVEAL -> runCatching { (Nostr.json.parseToJsonElement(e.content) as JsonObject)["share"]!!.jsonPrimitive.content.hex() }
                 .getOrNull()?.let { r.reveals.putIfAbsent(e.pubkey, it) }
@@ -236,12 +346,14 @@ class Referee(
 
     /** Every step that can happen now: seed ceremony, endorsements, final batches. Idempotent. */
     private suspend fun advance(live: Boolean) {
+        while (opening.isNotEmpty()) opening.removeAt(0).let { (e, city) -> openRound(e, city) }
+        for (g in handovers.keys.toList()) takeOver(g)
         for (r in rounds.values.toList()) {
             if (r.seed == null) seedCeremony(r, live)
             if (r.game == null) continue
             while (true) {
                 val next = r.applied + 1
-                if (r.final(next) == null && live) endorse(r, next)
+                if (r.final(next) == null && live && keys.pub in r.panel) endorse(r, next)
                 val final = r.final(next) ?: break
                 val b = Nostr.json.decodeFromString(Batch.serializer(), final)
                 val known = playerEvents[r.id].orEmpty()
@@ -258,19 +370,123 @@ class Referee(
         val share = myShare(r)
         if (live && keys.pub !in r.commits) {
             val deadline = r.open.created_at * 1000 + GameRules.SIGNUP_WINDOW
-            publish(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen(r.open.id, r.city, deadline, r.panel, Nostr.sha256(share).toHex())), r.id, listOf(listOf("c", r.city)))
+            publish(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen(r.open.id, r.city, deadline, r.first, Nostr.sha256(share).toHex())), r.id, listOf(listOf("c", r.city)))
         }
         // Nobody reveals until everyone has committed: nobody can pick a share after seeing others'.
-        if (r.commits.size < r.panel.size) return
+        if (r.commits.size < r.first.size) return
         if (live && keys.pub !in r.reveals) publish(Kinds.SEED_REVEAL, """{"share":"${share.toHex()}"}""", r.id)
-        if (r.panel.any { p -> r.reveals[p]?.let { Nostr.sha256(it).toHex() } != r.commits[p] }) return
-        val seed = Nostr.sha256(r.panel.map { r.reveals.getValue(it) }.reduce(ByteArray::plus))
+        if (r.first.any { p -> r.reveals[p]?.let { Nostr.sha256(it).toHex() } != r.commits[p] }) return
+        start(r, Nostr.sha256(r.first.map { r.reveals.getValue(it) }.reduce(ByteArray::plus)))
+    }
+
+    /** The round's first state, from its seed: the city split, and nobody signed up yet. */
+    private suspend fun start(r: Round, seed: ByteArray) {
         val (c, cells) = cities.resolve(r.city) ?: return
         val line = CityPartitioner().partition(cells, Random(seed.long()))
         r.seed = seed
         r.game = GameEngine(Random(seed.long())).newRound(r.id, c, Territory(c, line.line, cells), r.open.created_at * 1000)
         r.seqSince = clock()
+        for (m in r.panel) r.lastHeard.putIfAbsent(m, clock())
     }
+
+    /**
+     * Who may referee a round opened at [before] (unix seconds): the configured roster, plus any
+     * node that opted in (announced itself), has a key at least [KEY_AGE_DAYS] old, and has signed
+     * at least [AGREEMENTS] outcomes that matched their quorum. Minus anyone ever caught signing
+     * two batches for one sequence.
+     */
+    private suspend fun pool(before: Long): List<String> {
+        val announced = store.query(listOf(Filter(kinds = setOf(Kinds.NODE)))).filter { it.created_at < before }.map { it.pubkey }.toSet()
+        val oldEnough = announced.filter { k ->
+            store.query(listOf(Filter(authors = setOf(k)))).minOfOrNull { it.created_at }?.let { it <= before - KEY_AGE_DAYS * 86_400 } == true
+        }.toSet()
+        val agreed = standing(before).flatMap { it.signers }.groupingBy { it }.eachCount()
+        val earned = oldEnough.filter { (agreed[it] ?: 0) >= AGREEMENTS }
+        val doubled = store.query(listOf(Filter(kinds = setOf(Kinds.BATCH)))).filter { it.created_at < before }
+            .groupBy { Triple(it.pubkey, it.tag("g"), runCatching { Nostr.json.decodeFromString(Batch.serializer(), it.content).seq }.getOrNull()) }
+            .filter { (_, es) -> es.map { it.content }.distinct().size > 1 }.keys.map { it.first }.toSet()
+        return (roster + earned).distinct().filterNot { it in doubled || it in caught }.sorted()
+    }
+
+    /** The last seed drawn in [city] before [before] (unix seconds), from its public commits and reveals; empty for a city's first round. */
+    private suspend fun lastSeed(city: String, before: Long): String {
+        val opens = store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).filter { it.created_at < before }
+            .mapNotNull { e -> runCatching { Nostr.json.decodeFromString(GameOpen.serializer(), e.content) }.getOrNull()?.takeIf { it.city == city && e.pubkey in it.panel }?.let { e to it } }
+        for ((e, o) in opens.sortedByDescending { it.first.created_at }.distinctBy { it.second.open }) {
+            val g = e.tag("g") ?: continue
+            val commits = opens.filter { it.second.open == o.open }.associate { it.first.pubkey to it.second.commit }
+            val shares = store.query(listOf(Filter(kinds = setOf(Kinds.SEED_REVEAL), tags = mapOf("g" to setOf(g)))))
+                .mapNotNull { r -> runCatching { (Nostr.json.parseToJsonElement(r.content) as JsonObject)["share"]!!.jsonPrimitive.content.hex() }.getOrNull()?.let { r.pubkey to it } }
+                .filter { (who, s) -> commits[who] == Nostr.sha256(s).toHex() }.toMap()
+            if (o.panel.all { it in shares }) return Nostr.sha256(o.panel.map { shares.getValue(it) }.reduce(ByteArray::plus)).toHex()
+        }
+        return ""
+    }
+
+    /**
+     * Silent members: nothing signed for this game in the [SILENT_MS] before the rest of the panel's latest, while the round is live. Each referee that
+     * notices votes to replace one with the member the round's seed draws from the pool.
+     */
+    private suspend fun watch(r: Round) {
+        if (keys.pub !in r.panel || r.game?.phase !is GamePhase.Active && r.game?.phase !is GamePhase.FlagPlacement) return
+        // Against the panel's own latest sign of life, not the wall clock: after an outage of this
+        // node's, everyone would look silent.
+        val latest = r.panel.mapNotNull { r.lastHeard[it] }.maxOrNull() ?: return
+        for (m in r.panel) {
+            if (m == keys.pub || m in r.replacing || latest - (r.lastHeard[m] ?: latest) < SILENT_MS) continue
+            val into = pool(r.open.created_at).filterNot { it in r.terms || it in caught }
+                .minByOrNull { Nostr.sha256((it + r.seed!!.toHex() + m).toByteArray()).toHex() } ?: continue
+            r.replacing += m
+            publish(Kinds.REPLACE, Nostr.json.encodeToString(Replace.serializer(), Replace(m, into)), r.id)
+        }
+    }
+
+    /**
+     * A replacement vote, at its place in the batch order. When a quorum of the serving panel
+     * agrees, the swap takes effect from the next batch, and the others hand the newcomer the
+     * round so far and tell the phones.
+     */
+    private suspend fun swap(r: Round, e: Event, seq: Long, batched: Set<String>, live: Boolean) {
+        if (!r.serving(e.pubkey, seq)) return
+        val v = runCatching { Nostr.json.decodeFromString(Replace.serializer(), e.content) }.getOrNull() ?: return
+        if (v.out !in r.panel || v.into in r.terms) return
+        val voters = r.swaps.getOrPut("${v.out}|${v.into}") { mutableSetOf() }.apply { add(e.pubkey) }
+        if (voters.size < r.quorum) return
+        r.panel = r.panel.map { if (it == v.out) v.into else it }
+        r.terms.getValue(v.out)[1] = seq
+        r.terms[v.into] = mutableListOf(seq + 1, Long.MAX_VALUE)
+        r.lastHeard[v.into] = clock()
+        if (!live || keys.pub !in r.panel) return
+        val bodies = playerEvents[r.id].orEmpty().filterKeys { it in batched }.values
+            .filter { it.kind in setOf(Kinds.ACTION, Kinds.POSITION, Kinds.BLE_KEY) }
+            .mapNotNull { ev -> body(r, ev)?.let { listOf(ev.id, it) } }.sortedBy { it[0] }
+        val h = Handover(r.open, r.city, r.panel, r.terms.mapValues { it.value.toList() }.toSortedMap(), r.seed!!.toHex(), bodies)
+        publish(Kinds.HANDOVER, Nip44.seal(Nostr.json.encodeToString(Handover.serializer(), h), keys, v.into), r.id, listOf(listOf("p", v.into)))
+        publish(Kinds.PANEL, Nostr.json.encodeToString(PanelChange.serializer(), PanelChange(r.panel)), r.id)
+    }
+
+    /**
+     * A round this node was drawn into mid-game: joined once a quorum of the panel handed over the
+     * same round. It replays every batch from the start with the plaintext it was given.
+     */
+    private suspend fun takeOver(game: String) {
+        val sent = handovers[game] ?: return
+        val (content, senders) = sent.entries.groupBy({ it.value }, { it.key }).maxByOrNull { it.value.size } ?: return
+        val h = runCatching { Nostr.json.decodeFromString(Handover.serializer(), content) }.getOrNull() ?: return
+        if (keys.pub !in h.panel || senders.count { it in h.panel } < h.panel.size / 2 + 1) return
+        if (!h.open.valid()) return
+        val r = Round(h.open, game, h.city, h.terms.keys.filter { h.terms.getValue(it)[0] == 1L }.sorted())
+        r.panel = h.panel
+        r.terms.clear(); h.terms.forEach { (k, v) -> r.terms[k] = v.toMutableList() }
+        r.bodies = h.bodies.associate { it[0] to it[1] }
+        rounds[game] = r
+        handovers.remove(game)
+        start(r, h.seed.hex())
+        early.remove(game)?.forEach { ceremony(r, it) }
+    }
+
+    /** A player event's plaintext: opened with this referee's key, or from its handover. */
+    private fun body(r: Round, e: Event): String? = r.bodies[e.id] ?: Sealed.open(e.content, keys, e.pubkey)
 
     /** This referee's seed share: secret, yet the same after a restart, so a crash between commit and reveal isn't fatal. */
     private fun myShare(r: Round) = hmac(keys.secret, "seed|${r.open.id}".toByteArray())
@@ -280,7 +496,8 @@ class Referee(
         val signers = r.signed[seq].orEmpty()
         if (keys.pub in signers) return
         val now = clock()
-        val pending = pendingOf(r).map { it.id }.toSet()
+        // Everything unbatched counts here, including captures this referee would still hold for scores.
+        val pending = unbatched(r).map { it.id }.toSet()
         val sound = signers.values.distinct().firstOrNull { content ->
             val b = runCatching { Nostr.json.decodeFromString(Batch.serializer(), content) }.getOrNull() ?: return@firstOrNull false
             // Never from the future. An old proposal stays signable: its signers are locked to it,
@@ -291,8 +508,19 @@ class Referee(
         publish(Kinds.BATCH, sound, r.id)
     }
 
-    private fun pendingOf(r: Round) =
-        playerEvents[r.id].orEmpty().values.filter { it.id !in r.finalized }.sortedWith(compareBy({ it.created_at }, { it.id }))
+    /**
+     * What goes in the next batch. A capture or jailbreak waits up to [MATCH_WAIT_MS] for a
+     * quorum of matcher scores, so they land in the same batch or before it; after that it goes
+     * without them, and the matcher is skipped.
+     */
+    private fun unbatched(r: Round) = playerEvents[r.id].orEmpty().values.filter { it.id !in r.finalized }
+
+    private fun pendingOf(r: Round): List<Event> {
+        val now = clock()
+        return unbatched(r)
+            .filterNot { e -> r.matchWait[e.id]?.let { now - it < MATCH_WAIT_MS && r.matchers[e.id].orEmpty().count { it in r.panel } < r.quorum } == true }
+            .sortedWith(compareBy({ it.created_at }, { it.id }))
+    }
 
     /**
      * Runs one final batch through the engine. [live] publishes this referee's outcome;
@@ -302,25 +530,33 @@ class Referee(
         // Seeded by the batch's contents and its leader's millisecond clock too: a challenge drawn here
         // can't be known, or steered by crafting one's own event, before the batch exists.
         val batchSeed = Nostr.sha256(r.seed!! + b.seq.bytes() + b.at.bytes() + Nostr.sha256(b.events.joinToString(",").toByteArray()))
-        val engine = GameEngine(Random(batchSeed.long()), levelOf = { id -> Leaderboard.levelOf(ledger, id) }, isRookie = { id -> ledger.none { it.user == id } })
+        val past = r.frozen ?: pastAwards(r.open.created_at).also { r.frozen = it }
+        val engine = GameEngine(Random(batchSeed.long()), levelOf = { id -> Leaderboard.levelOf(past, id) }, isRookie = { id -> past.none { it.user == id } })
         val before = r.game!!
         var total = engine.tick(before, b.at)
         val verdicts = mutableMapOf<String, String>()
+        // Scores first, wherever they sit in the batch: the capture they're for may come before them.
+        for (e in events) if (e.kind == Kinds.MATCH && e.pubkey in r.panel) {
+            runCatching { Nostr.json.decodeFromString(Match.serializer(), e.content) }.getOrNull()
+                ?.takeIf { it.score in 0.0..1.0 }?.let { r.scores.getOrPut(it.event) { mutableMapOf() }.putIfAbsent(e.pubkey, it.score) }
+        }
+        val batched = r.finalized + b.events
         for (e in events) {
+            if (e.kind == Kinds.MATCH) continue
+            if (e.kind == Kinds.REPLACE) { swap(r, e, b.seq, batched, live); continue }
             if (e.kind == Kinds.RULING) {
                 val step = vote(r, engine, total.game, e, b.at) ?: continue
                 verdicts[e.id] = (step.verdict as? Verdict.Rejected)?.reason ?: "ok"
                 total += step
                 continue
             }
-            val body = Sealed.open(e.content, keys, e.pubkey)
+            val body = body(r, e)
             if (body == null) { verdicts[e.id] = "unreadable"; continue }
             val step = runCatching { step(r, engine, total.game, e, body, b.at) }.getOrElse { verdicts[e.id] = "malformed"; null } ?: continue
             verdicts[e.id] = (step.verdict as? Verdict.Rejected)?.reason ?: "ok"
             total += step
         }
         r.game = total.game
-        ledger += total.awards
         r.held += total.highlights.filter { it.secret }
         val ended = before.phase !is GamePhase.Ended && total.game.phase is GamePhase.Ended
         val aired = total.highlights.filterNot { it.secret } + (if (ended) r.held.toList().also { r.held.clear() } else emptyList())
@@ -370,7 +606,7 @@ class Referee(
                 unattested(a, who)?.let { return Transition(g, Verdict.Rejected(it)) }
             }) {
                 is Action.Open -> null
-                is Action.Join -> engine.join(g, User(who, a.name, a.selfie))
+                is Action.Join -> if (who in r.terms) Transition(g, Verdict.Rejected("Referees can't play in games they referee")) else engine.join(g, User(who, a.name, a.selfie))
                 is Action.CoCaptains -> engine.appointCoCaptains(g, who, a.picks)
                 is Action.PlaceFlag -> engine.placeFlag(g, who, a.venue, a.kind, a.address, GeoPoint(a.lat, a.lng), a.photo.toModel(), now).also {
                     if (it.verdict !is Verdict.Rejected) {
@@ -381,7 +617,7 @@ class Referee(
                 is Action.PlaceJail -> engine.placeJail(g, who, a.venue, a.address, GeoPoint(a.lat, a.lng), a.photo.toModel(), now)
                 is Action.GoLive -> engine.goLive(g, who, a.stream, a.purpose, a.fix.fix(), now)
                 is Action.Frame -> engine.streamFrame(g, who, a.stream, a.fix.fix(), a.chunk, now)
-                is Action.EndStream -> engine.endStream(g, who, a.stream, a.photo.toModel(), now)
+                is Action.EndStream -> engine.endStream(g, who, a.stream, a.photo.toModel(), now, visualMatch(r, e.id))
                 is Action.Dispute -> engine.dispute(g, who, a.stream, a.reason, now)
                 is Action.Appeal -> engine.appeal(g, who, a.stream, now)
                 is Action.LocationOff -> engine.locationOff(g, who, now)
@@ -475,6 +711,10 @@ class Referee(
         const val LEADER_TURN_MS = 15_000L
         /** A batch goes out at least this often, empty or not, so timed rules advance. */
         const val TICK_MS = 60_000L
+        const val MATCH_WAIT_MS = 30_000L
+        const val SILENT_MS = 10 * 60_000L
+        const val KEY_AGE_DAYS = 30L
+        const val AGREEMENTS = 20
         /** A batch's time may be at most this far ahead of the endorser's own clock. */
         const val CLOCK_SKEW_MS = 30_000L
     }

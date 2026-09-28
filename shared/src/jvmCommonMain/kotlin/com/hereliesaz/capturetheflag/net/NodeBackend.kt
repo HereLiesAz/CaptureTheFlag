@@ -79,6 +79,7 @@ class NodeBackend(
     private val names = ConcurrentHashMap<PlayerId, String>()
     private val bleKeys = ConcurrentHashMap<String, ByteArray>()
     private val seen = ConcurrentHashMap.newKeySet<String>()
+    private val panelVotes = ConcurrentHashMap<String, MutableSet<String>>()
     private val laps = ConcurrentHashMap<String, MutableStateFlow<List<String>>>()
 
     init {
@@ -97,7 +98,7 @@ class NodeBackend(
                 val id = e.tag("g") ?: return
                 rounds.putIfAbsent(id, Round(id, o.panel))
                 current[o.city] = id
-                relay.subscribe("game:$id", listOf(Filter(kinds = setOf(Kinds.OUTCOME), tags = mapOf("g" to setOf(id)))))
+                relay.subscribe("game:$id", listOf(Filter(kinds = setOf(Kinds.OUTCOME, Kinds.PANEL), tags = mapOf("g" to setOf(id)))))
             }
             Kinds.PUBLIC_VIEW -> {
                 val city = e.tag("c") ?: return
@@ -118,6 +119,16 @@ class NodeBackend(
                 if (outcomes.putIfAbsent("$game|${o.seq}", o.awards.map { Award(it.user, city, game, it.points, it.reason, e.created_at * 1000) }) == null) {
                     _ledger.value = outcomes.values.flatten().sortedBy { it.at }
                     if (o.highlights.isNotEmpty()) _highlights.update { (it + o.highlights).distinct().sortedBy { h -> h.at } }
+                }
+            }
+            Kinds.PANEL -> {
+                // A silent referee was replaced: seal to the new panel once a majority of the one we knew says so.
+                val id = e.tag("g") ?: return
+                val round = rounds[id] ?: return
+                if (e.pubkey !in round.panel) return
+                val votes = panelVotes.getOrPut("$id|${e.content}") { ConcurrentHashMap.newKeySet() }.apply { add(e.pubkey) }
+                if (votes.size >= round.panel.size / 2 + 1) {
+                    rounds[id] = Round(id, Nostr.json.decodeFromString(PanelChange.serializer(), e.content).panel)
                 }
             }
             Kinds.PING -> pingBus.emit(Pings.decode(Nip44.open(e.content, keys, e.pubkey)))
