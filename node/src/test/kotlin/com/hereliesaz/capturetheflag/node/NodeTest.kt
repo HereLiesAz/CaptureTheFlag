@@ -282,6 +282,33 @@ class NodeTest {
         assertEquals(1, outcomes.map { it.content }.distinct().size, "and agreed")
     }
 
+    @Test fun aRefereeThatNeverShowsUpIsLeftOutOfTheSeed() = runTest {
+        val net = Network(5)
+        net.down += 4
+        val players = (1..4).map { Keys.generate() }
+        net.send(action(players[0], Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).first().tag("g")!!
+        assertTrue(net.live().none { game in it.games }, "four commitments of five: no seed yet")
+        assertTrue(net.store.query(listOf(Filter(kinds = setOf(Kinds.SEED_REVEAL)))).isEmpty(), "and nobody reveals early")
+
+        // Five minutes on, the four vote the fifth out of the seed and draw it among themselves.
+        net.now += Referee.SEED_WAIT_MS
+        net.flush()
+        assertEquals(4, net.store.query(listOf(Filter(kinds = setOf(Kinds.SEED_DROP)))).size)
+        assertEquals(1, net.live().map { it.games.getValue(game) }.distinct().size, "the four agree on the round")
+
+        // And play goes on without it.
+        val panel = net.referees[0].panelOf(game)!!
+        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", "s$i"), game, panel = panel)) }
+        net.flush()
+        net.live().forEach { assertEquals(4, it.games.getValue(game).signups.size) }
+
+        // It comes back late with its commitment and reveal: too late, the seed stands.
+        net.down -= 4
+        net.pump(); net.flush()
+        assertEquals(1, net.referees.map { it.games.getValue(game) }.distinct().size, "it replays to the same round")
+    }
+
     @Test fun aRefereeWhoSignsTwoBatchesIsCaught() = runTest {
         val net = Network(5)
         val p = Keys.generate()

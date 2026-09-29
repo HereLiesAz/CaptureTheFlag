@@ -39,6 +39,8 @@ object Kinds {
     const val HANDOVER = 34012
     /** The panel as it stands after a replacement ([PanelChange]). Phones take it from a quorum of the panel they knew. */
     const val PANEL = 34013
+    /** One referee's vote to leave [SeedDrop.out]'s share out of the seed: it never committed or never revealed. */
+    const val SEED_DROP = 34014
     /** City chat: a plain public note, tagged `c`. */
     const val NOTE = 1
     /**
@@ -211,6 +213,10 @@ data class Replace(val out: String, val into: String)
  */
 @Serializable
 data class Handover(val open: Event, val city: String, val panel: List<String>, val terms: Map<String, List<Long>>, val seed: String, val bodies: List<List<String>>)
+
+/** Content of a kind-34014 seed drop. */
+@Serializable
+data class SeedDrop(val out: String)
 
 /** Content of a kind-34013 panel change. */
 @Serializable
