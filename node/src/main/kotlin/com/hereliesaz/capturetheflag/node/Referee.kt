@@ -75,6 +75,14 @@ class Referee(
         /** Plaintext handed over to a referee drawn mid-round, by event id; it can't open what was sealed before it came. */
         var bodies: Map<String, String> = emptyMap()
         val commits = mutableMapOf<String, String>()
+        /** When this referee took up the round, by its own clock: the seed ceremony's deadline runs from here. */
+        var openedAt = 0L
+        /** Seed-drop votes: member → who voted to leave its share out. */
+        val drops = mutableMapOf<String, MutableSet<String>>()
+        /** When every sitting member had committed, by this referee's clock: the reveal deadline runs from here. */
+        var committedAt: Long? = null
+        /** Members this referee has voted to drop from the seed. */
+        val dropping = mutableSetOf<String>()
         val reveals = mutableMapOf<String, ByteArray>()
         var seed: ByteArray? = null
         var game: Game? = null
@@ -269,7 +277,7 @@ class Referee(
 
     /** Rebuilds every game this node referees from the store, publishing nothing. */
     suspend fun restore() = lock.withLock {
-        store.query(listOf(Filter(kinds = setOf(Kinds.ACTION, Kinds.POSITION, Kinds.BLE_KEY, Kinds.RULING, Kinds.MATCH, Kinds.REPLACE, Kinds.HANDOVER, Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.BATCH))))
+        store.query(listOf(Filter(kinds = setOf(Kinds.ACTION, Kinds.POSITION, Kinds.BLE_KEY, Kinds.RULING, Kinds.MATCH, Kinds.REPLACE, Kinds.HANDOVER, Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.SEED_DROP, Kinds.BATCH))))
             .sortedWith(compareBy({ it.created_at }, { it.id }))
             .forEach { ingest(it) }
         advance(live = false)
@@ -304,7 +312,7 @@ class Referee(
             Kinds.HANDOVER -> if (game != null && e.tag("p") == keys.pub && rounds[game] == null) {
                 Nip44.runCatching { open(e.content, keys, e.pubkey) }.getOrNull()?.let { handovers.getOrPut(game) { mutableMapOf() }[e.pubkey] = it }
             }
-            Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.BATCH -> {
+            Kinds.GAME_OPEN, Kinds.SEED_REVEAL, Kinds.SEED_DROP, Kinds.BATCH -> {
                 if (game == null) return
                 val r = rounds[game] ?: run { early.getOrPut(game) { mutableListOf() } += e; return }
                 ceremony(r, e)
@@ -324,7 +332,7 @@ class Referee(
         val panel = pool(e.created_at).sortedBy { Nostr.sha256((it + draw).toByteArray()).toHex() }.take(PANEL_SIZE)
         if (keys.pub !in panel) return
         val id = "g-" + e.id.take(16)
-        val r = Round(e, id, key, panel).also { rounds[id] = it }
+        val r = Round(e, id, key, panel).also { rounds[id] = it; it.openedAt = clock() }
         early.remove(id)?.forEach { ceremony(r, it) }
     }
 
@@ -334,6 +342,8 @@ class Referee(
             Kinds.GAME_OPEN -> runCatching { Nostr.json.decodeFromString(GameOpen.serializer(), e.content) }.getOrNull()
                 ?.takeIf { it.open == r.open.id && it.panel == r.first }
                 ?.let { r.commits.putIfAbsent(e.pubkey, it.commit) }
+            Kinds.SEED_DROP -> runCatching { Nostr.json.decodeFromString(SeedDrop.serializer(), e.content).out }.getOrNull()
+                ?.takeIf { it in r.first && it != e.pubkey && e.pubkey in r.first }?.let { r.drops.getOrPut(it) { mutableSetOf() }.add(e.pubkey) }
             Kinds.SEED_REVEAL -> runCatching { (Nostr.json.parseToJsonElement(e.content) as JsonObject)["share"]!!.jsonPrimitive.content.hex() }
                 .getOrNull()?.let { r.reveals.putIfAbsent(e.pubkey, it) }
             Kinds.BATCH -> {
@@ -349,7 +359,8 @@ class Referee(
         while (opening.isNotEmpty()) opening.removeAt(0).let { (e, city) -> openRound(e, city) }
         for (g in handovers.keys.toList()) takeOver(g)
         for (r in rounds.values.toList()) {
-            if (r.seed == null) seedCeremony(r, live)
+            // Until the first batch, a late seed drop can still change the seed; after it, the seed is fixed.
+            if (r.seed == null || (r.applied == 0L && keys.pub in r.first)) seedCeremony(r, live)
             if (r.game == null) continue
             while (true) {
                 val next = r.applied + 1
@@ -372,12 +383,34 @@ class Referee(
             val deadline = r.open.created_at * 1000 + GameRules.SIGNUP_WINDOW
             publish(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen(r.open.id, r.city, deadline, r.first, Nostr.sha256(share).toHex())), r.id, listOf(listOf("c", r.city)))
         }
-        // Nobody reveals until everyone has committed: nobody can pick a share after seeing others'.
-        if (r.commits.size < r.first.size) return
-        if (live && keys.pub !in r.reveals) publish(Kinds.SEED_REVEAL, """{"share":"${share.toHex()}"}""", r.id)
-        if (r.first.any { p -> r.reveals[p]?.let { Nostr.sha256(it).toHex() } != r.commits[p] }) return
-        start(r, Nostr.sha256(r.first.map { r.reveals.getValue(it) }.reduce(ByteArray::plus)))
+        // A member that hasn't committed within [SEED_WAIT_MS] of the open, or revealed within as long of
+        // the last commitment, is voted out of the seed; a
+        // quorum of votes drops its share, and the rest decide. It stays on the panel until replaced.
+        val sitting = sitting(r.first, r.drops, r.quorum) ?: return
+        // Nobody reveals until every sitting member has committed: nobody can pick a share after seeing others'.
+        val uncommitted = sitting.filter { it !in r.commits }
+        if (uncommitted.isNotEmpty()) { if (live && clock() - r.openedAt >= SEED_WAIT_MS) dropFromSeed(r, uncommitted); return }
+        val since = r.committedAt ?: clock().also { r.committedAt = it }
+        val late = live && clock() - since >= SEED_WAIT_MS
+        if (live && keys.pub in sitting && keys.pub !in r.reveals) publish(Kinds.SEED_REVEAL, """{"share":"${share.toHex()}"}""", r.id)
+        val unrevealed = sitting.filter { p -> r.reveals[p]?.let { Nostr.sha256(it).toHex() } != r.commits[p] }
+        if (unrevealed.isNotEmpty()) { if (late) dropFromSeed(r, unrevealed); return }
+        val seed = Nostr.sha256(sitting.map { r.reveals.getValue(it) }.reduce(ByteArray::plus))
+        if (r.seed?.contentEquals(seed) != true) start(r, seed)
     }
+
+    /** Votes, once each, to leave [who] out of the seed. Never a member whose reveal this referee holds. */
+    private suspend fun dropFromSeed(r: Round, who: List<String>) {
+        if (keys.pub !in r.first) return
+        for (m in who) {
+            if (m == keys.pub || m in r.reveals || !r.dropping.add(m)) continue
+            publish(Kinds.SEED_DROP, Nostr.json.encodeToString(SeedDrop.serializer(), SeedDrop(m)), r.id)
+        }
+    }
+
+    /** The members whose shares make the seed: all of [first] but those a quorum voted out. Null if fewer than a quorum remain. */
+    private fun sitting(first: List<String>, drops: Map<String, Set<String>>, quorum: Int): List<String>? =
+        first.filterNot { m -> drops[m].orEmpty().count { it in first && it != m } >= quorum }.takeIf { it.size >= quorum }
 
     /** The round's first state, from its seed: the city split, and nobody signed up yet. */
     private suspend fun start(r: Round, seed: ByteArray) {
@@ -418,7 +451,11 @@ class Referee(
             val shares = store.query(listOf(Filter(kinds = setOf(Kinds.SEED_REVEAL), tags = mapOf("g" to setOf(g)))))
                 .mapNotNull { r -> runCatching { (Nostr.json.parseToJsonElement(r.content) as JsonObject)["share"]!!.jsonPrimitive.content.hex() }.getOrNull()?.let { r.pubkey to it } }
                 .filter { (who, s) -> commits[who] == Nostr.sha256(s).toHex() }.toMap()
-            if (o.panel.all { it in shares }) return Nostr.sha256(o.panel.map { shares.getValue(it) }.reduce(ByteArray::plus)).toHex()
+            val drops = store.query(listOf(Filter(kinds = setOf(Kinds.SEED_DROP), tags = mapOf("g" to setOf(g)))))
+                .mapNotNull { d -> runCatching { Nostr.json.decodeFromString(SeedDrop.serializer(), d.content).out }.getOrNull()?.let { it to d.pubkey } }
+                .groupBy({ it.first }, { it.second }).mapValues { it.value.toSet() }
+            val sitting = sitting(o.panel, drops, o.panel.size / 2 + 1) ?: continue
+            if (sitting.all { it in shares }) return Nostr.sha256(sitting.map { shares.getValue(it) }.reduce(ByteArray::plus)).toHex()
         }
         return ""
     }
@@ -428,7 +465,7 @@ class Referee(
      * notices votes to replace one with the member the round's seed draws from the pool.
      */
     private suspend fun watch(r: Round) {
-        if (keys.pub !in r.panel || r.game?.phase !is GamePhase.Active && r.game?.phase !is GamePhase.FlagPlacement) return
+        if (keys.pub !in r.panel || r.game?.phase.let { it !is GamePhase.Signup && it !is GamePhase.FlagPlacement && it !is GamePhase.Active }) return
         // Against the panel's own latest sign of life, not the wall clock: after an outage of this
         // node's, everyone would look silent.
         val latest = r.panel.mapNotNull { r.lastHeard[it] }.maxOrNull() ?: return
@@ -713,6 +750,7 @@ class Referee(
         const val TICK_MS = 60_000L
         const val MATCH_WAIT_MS = 30_000L
         const val SILENT_MS = 10 * 60_000L
+        const val SEED_WAIT_MS = 5 * 60_000L
         const val KEY_AGE_DAYS = 30L
         const val AGREEMENTS = 20
         /** A batch's time may be at most this far ahead of the endorser's own clock. */
