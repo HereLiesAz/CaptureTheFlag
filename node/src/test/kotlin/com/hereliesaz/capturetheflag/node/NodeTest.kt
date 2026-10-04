@@ -309,6 +309,108 @@ class NodeTest {
         assertEquals(1, net.referees.map { it.games.getValue(game) }.distinct().size, "it replays to the same round")
     }
 
+    /** A round on [net] with four players, flags and jails placed: play is live. */
+    private class Live(val net: Network, val players: List<Keys>, val game: String, val panel: List<String>) {
+        val keyOf = players.associateBy { it.pub }
+        fun g() = net.referees.first { game in it.games }.games.getValue(game)
+        suspend fun send(e: Event) = net.send(e)
+        suspend fun sealed(k: Keys, kind: Int, body: String) =
+            net.send(k.sign(kind, Sealed.forPanel(body, k, panel), listOf(listOf("g", game)), net.now / 1000))
+        suspend fun act(k: Keys, a: Action) { sealed(k, Kinds.ACTION, Nostr.json.encodeToString(Action.serializer(), a)); net.flush() }
+        suspend fun at(k: Keys, p: GeoPoint) { sealed(k, Kinds.POSITION, Nostr.json.encodeToString(Position.serializer(), Position(p.lat, p.lng, net.now, 5.0))); net.flush() }
+        fun ground(team: Team) = g().territory.cells.map { it.center }.filter { g().territory.ownerOf(it) == team }
+    }
+
+    private suspend fun live(net: Network, players: List<Keys> = (1..4).map { Keys.generate() }): Live {
+        net.send(action(players[0], Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).first { it.tag("c") == "new orleans" }.tag("g")!!
+        val l = Live(net, players, game, net.referees.firstNotNullOf { it.panelOf(game) })
+        players.forEachIndexed { i, p -> l.act(p, Action.Join("P$i", "s$i")) }
+        net.now += GameRules.SIGNUP_WINDOW; net.flush()
+        for (team in Team.entries) {
+            val cap = l.g().players.values.first { it.team == team && it.role == Role.CAPTAIN }
+            val home = l.ground(team)
+            val flag = home.first()
+            val jail = home.first { it.distanceTo(flag) > GameRules.JAIL_MIN_FROM_FLAG_M + 100 }
+            l.act(l.keyOf.getValue(cap.id), Action.PlaceFlag("Statue", FlagVenueKind.PUBLIC_SPACE, "1 St", flag.lat, flag.lng, shot(flag, net.now)))
+            l.act(l.keyOf.getValue(cap.id), Action.PlaceJail("Jail", "2 St", jail.lat, jail.lng, shot(jail, net.now)))
+        }
+        assertIs<GamePhase.Active>(l.g().phase)
+        return l
+    }
+
+    @Test fun teamChatToSomeoneCutOffWaitsUntilTheyreHome() = runTest {
+        val l = live(Network(5))
+        val (a, b) = l.g().players.values.groupBy { it.team }.values.first { it.size >= 2 }.take(2).map { l.keyOf.getValue(it.id) }
+        val team = l.g().players.getValue(a.pub).team
+        // B on enemy ground: cut off.
+        l.net.now += 1_000; l.at(b, l.ground(team.opponent).first())
+        assertTrue(com.hereliesaz.capturetheflag.chat.ChatAccess.blackedOut(b.pub, l.g()))
+
+        // A writes to the team room, through the referees.
+        val inner = a.sign(Kinds.TEAM_CHAT, """{"channel":"team:${l.game}:${team.name}","text":"they moved the flag"}""")
+        l.sealed(a, Kinds.CHAT, Nostr.json.encodeToString(Event.serializer(), inner))
+        suspend fun deliveredTo(k: Keys) = l.net.store.query(listOf(Filter(kinds = setOf(Kinds.TEAM_CHAT), tags = mapOf("p" to setOf(k.pub)))))
+        assertTrue(deliveredTo(a).isNotEmpty(), "A gets their own copy")
+        assertTrue(deliveredTo(b).isEmpty(), "B, cut off, gets nothing yet")
+
+        // B makes it home: the message is waiting, signed by A.
+        l.net.now += 1_000; l.at(b, l.ground(team).first())
+        val got = deliveredTo(b)
+        assertTrue(got.isNotEmpty(), "delivered once B is home")
+        val opened = Nostr.json.decodeFromString(Event.serializer(), Nip44.open(got.first().content, b, got.first().pubkey))
+        assertEquals(inner.id, opened.id)
+    }
+
+    @Test fun secretHighlightsAreHeldUntilTheRoundEnds() = runTest {
+        val net = Network(5)
+        val players = (1..4).map { Keys.generate() }
+        // Seasoned players: an earlier round, signed by a majority of the same trusted referees, made them high level.
+        val before = net.now / 1000 - 100
+        val panel = net.keys.map { it.pub }
+        net.keys.forEach { k -> net.store.add(k.sign(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen("old", "old town", 0, panel, "x")), listOf(listOf("g", "g-old")), before)) }
+        val past = Nostr.json.encodeToString(Outcome.serializer(), Outcome(1, emptyMap(), players.map { Outcome.AwardDto(it.pub, 1_000_000, "veteran") }, emptyList(), "Ended"))
+        net.keys.take(3).forEach { k -> net.store.add(k.sign(Kinds.OUTCOME, past, listOf(listOf("g", "g-old")), before)) }
+        // And a stranger's forged game counts for nothing.
+        val forger = Keys.generate()
+        net.store.add(forger.sign(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen("fake", "old town", 0, listOf(forger.pub), "x")), listOf(listOf("g", "g-fake")), before))
+        net.store.add(forger.sign(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(1, emptyMap(), listOf(Outcome.AwardDto(forger.pub, 9_000_000, "self-made")), emptyList(), "Ended")), listOf(listOf("g", "g-fake")), before))
+
+        val l = live(net, players + forger)
+        assertEquals(1, l.g().players.getValue(forger.pub).level, "the forger's self-awarded points count for nothing")
+        assertTrue(players.all { l.g().players.getValue(it.pub).level > 1 }, "the veterans' do")
+        val p = l.g().players.values.first { com.hereliesaz.capturetheflag.rules.Progression.perksFor(it.level).decoysPerGame > 0 }
+        val target = l.ground(p.team.opponent).first()
+        l.act(l.keyOf.getValue(p.id), Action.Decoy(target.lat, target.lng))
+        assertEquals(1, l.g().decoysUsed[p.id])
+        suspend fun aired() = net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME), tags = mapOf("g" to setOf(l.game)))))
+            .flatMap { Nostr.json.decodeFromString(Outcome.serializer(), it.content).highlights }
+        assertTrue(aired().none { it.kind == com.hereliesaz.capturetheflag.model.HighlightKind.DECOY }, "secret while the round is on")
+
+        net.now += GameRules.PLAY_WINDOW
+        repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
+        assertIs<GamePhase.Ended>(l.g().phase)
+        assertTrue(aired().any { it.kind == com.hereliesaz.capturetheflag.model.HighlightKind.DECOY && it.user == p.id }, "aired when it ends")
+    }
+
+    @Test fun aRefereeThatCommitsButNeverRevealsIsLeftOutOfTheSeed() = runTest {
+        val net = Network(5)
+        net.down += 4
+        net.send(action(Keys.generate(), Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val open = net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).first()
+        val game = open.tag("g")!!
+        val o = Nostr.json.decodeFromString(GameOpen.serializer(), open.content)
+        // The fifth commits to a share, then never says it.
+        net.send(net.keys[4].sign(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), o.copy(commit = Nostr.sha256(ByteArray(32) { 7 }).toHex())), listOf(listOf("g", game), listOf("c", o.city))))
+        assertEquals(4, net.store.query(listOf(Filter(kinds = setOf(Kinds.SEED_REVEAL)))).size, "the other four reveal")
+        assertTrue(net.live().none { game in it.games }, "no seed without the fifth, yet")
+
+        net.now += Referee.SEED_WAIT_MS
+        net.flush()
+        assertTrue(net.store.query(listOf(Filter(kinds = setOf(Kinds.SEED_DROP)))).isNotEmpty())
+        assertEquals(1, net.live().map { it.games.getValue(game) }.distinct().size, "the four agree on a seed without it")
+    }
+
     @Test fun aRefereeWhoSignsTwoBatchesIsCaught() = runTest {
         val net = Network(5)
         val p = Keys.generate()
@@ -467,6 +569,20 @@ class NodeTest {
             store.add(sneak.sign(Kinds.TEAM_CHAT, Nip44.seal(Nostr.json.encodeToString(Event.serializer(), inner), sneak, ana.me.value!!.id), listOf(listOf("p", ana.me.value!!.id))))
             kotlinx.coroutines.delay(300)
             assertTrue(ana.messages(room).value.none { it.body == "psst" })
+
+            // A silent referee replaced: the phone seals to the new panel once a majority of the old one says so.
+            val newcomer = Keys.generate()
+            store.add(node.sign(Kinds.PANEL, Nostr.json.encodeToString(PanelChange.serializer(), PanelChange(listOf(node.pub, newcomer.pub))), listOf(listOf("g", seen.id))))
+            suspend fun chatFrom(k: String) = store.query(listOf(Filter(kinds = setOf(Kinds.CHAT), authors = setOf(k))))
+            val sent = chatFrom(ana.me.value!!.id).size
+            kotlinx.coroutines.withTimeoutOrNull(10_000) {
+                while (true) {
+                    ana.send(room, "still under the oak")
+                    val last = chatFrom(ana.me.value!!.id).drop(sent).lastOrNull()
+                    if (last != null && Sealed.open(last.content, newcomer, last.pubkey) != null) break
+                    kotlinx.coroutines.delay(100)
+                }
+            } ?: error("the phone never sealed to the new panel")
 
             // Highlights ride the referees' outcomes.
             val moment = com.hereliesaz.capturetheflag.model.Highlight(com.hereliesaz.capturetheflag.model.HighlightKind.NEAR_MISS, ana.me.value!!.id, null, seen.id, seen.city.id, now)
