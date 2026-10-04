@@ -142,7 +142,8 @@ class Referee(
     /** Takes in any event from the network and moves every game as far as it can go. */
     suspend fun accept(e: Event) {
         lock.withLock {
-            if (e.kind == Kinds.CHAT) return forward(e)
+            // Once per message, however often it reaches this node: peers and restarts deliver repeats.
+            if (e.kind == Kinds.CHAT) return if (seen.add(e.id)) forward(e) else Unit
             ingest(e)
             advance(live = true)
         }
@@ -226,8 +227,13 @@ class Referee(
     /** One batch's outcome as a quorum of its game's own panel signed it. */
     private class Stood(val game: String, val open: GameOpen, val outcome: Outcome, val signers: List<String>, val at: Long)
 
-    /** Every outcome that stood before [before] (unix seconds), across the network. */
+    /**
+     * Every outcome that stood before [before] (unix seconds), across the network: signed by a
+     * majority of its game's panel, counting only trusted keys. Anyone can sign a game open naming
+     * themselves its panel; without the trust check, they could award themselves any level.
+     */
     private suspend fun standing(before: Long): List<Stood> {
+        val trusted = roster.toSet() + seasoned(before)
         val panels = store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).filter { it.created_at < before }
             .mapNotNull { e -> e.tag("g")?.let { g -> runCatching { Nostr.json.decodeFromString(GameOpen.serializer(), e.content) }.getOrNull()?.takeIf { e.pubkey in it.panel }?.let { g to it } } }
             .toMap()
@@ -237,7 +243,7 @@ class Referee(
                 val (g, seq) = key
                 val open = panels[g] ?: return@mapNotNull null
                 if (seq == null) return@mapNotNull null
-                val stood = signed.filter { it.pubkey in open.panel }.distinctBy { it.pubkey }.groupBy { it.content }
+                val stood = signed.filter { it.pubkey in open.panel && it.pubkey in trusted }.distinctBy { it.pubkey }.groupBy { it.content }
                     .entries.firstOrNull { it.value.size >= open.panel.size / 2 + 1 } ?: return@mapNotNull null
                 Stood(g!!, open, Nostr.json.decodeFromString(Outcome.serializer(), stood.key), stood.value.map { it.pubkey }, stood.value.minOf { it.created_at } * 1000)
             }
@@ -429,10 +435,7 @@ class Referee(
      * two batches for one sequence.
      */
     private suspend fun pool(before: Long): List<String> {
-        val announced = store.query(listOf(Filter(kinds = setOf(Kinds.NODE)))).filter { it.created_at < before }.map { it.pubkey }.toSet()
-        val oldEnough = announced.filter { k ->
-            store.query(listOf(Filter(authors = setOf(k)))).minOfOrNull { it.created_at }?.let { it <= before - KEY_AGE_DAYS * 86_400 } == true
-        }.toSet()
+        val oldEnough = seasoned(before)
         val agreed = standing(before).flatMap { it.signers }.groupingBy { it }.eachCount()
         val earned = oldEnough.filter { (agreed[it] ?: 0) >= AGREEMENTS }
         val doubled = store.query(listOf(Filter(kinds = setOf(Kinds.BATCH)))).filter { it.created_at < before }
@@ -440,6 +443,12 @@ class Referee(
             .filter { (_, es) -> es.map { it.content }.distinct().size > 1 }.keys.map { it.first }.toSet()
         return (roster + earned).distinct().filterNot { it in doubled || it in caught }.sorted()
     }
+
+    /** Nodes that opted in (announced themselves) with a key at least [KEY_AGE_DAYS] old at [before] (unix seconds). */
+    private suspend fun seasoned(before: Long): Set<String> =
+        store.query(listOf(Filter(kinds = setOf(Kinds.NODE)))).filter { it.created_at < before }.map { it.pubkey }.toSet().filter { k ->
+            store.query(listOf(Filter(authors = setOf(k)))).minOfOrNull { it.created_at }?.let { it <= before - KEY_AGE_DAYS * 86_400 } == true
+        }.toSet()
 
     /** The last seed drawn in [city] before [before] (unix seconds), from its public commits and reveals; empty for a city's first round. */
     private suspend fun lastSeed(city: String, before: Long): String {
