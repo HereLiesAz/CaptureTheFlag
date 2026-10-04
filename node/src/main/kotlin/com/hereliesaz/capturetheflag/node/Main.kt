@@ -28,12 +28,15 @@ import java.io.File
  * PUBLIC_URL=wss://node-a.example ...                    # announce this node; the roster's announced nodes are followed too
  * ~~~
  */
+/** A setting, or null when it's unset or blank (compose passes unset variables as empty strings). */
+private fun env(name: String): String? = System.getenv(name)?.trim()?.takeIf { it.isNotEmpty() }
+
 fun main() = runBlocking {
-    val port = System.getenv("PORT")?.toInt() ?: 7447
-    val dir = File(System.getenv("DATA_DIR") ?: "node-data").apply { mkdirs() }
+    val port = env("PORT")?.toInt() ?: 7447
+    val dir = File(env("DATA_DIR") ?: "node-data").apply { mkdirs() }
     val keys = loadOrCreateKeys(File(dir, "node.key"))
-    val archive = System.getenv("ARCHIVE")?.let {
-        val sync = if (System.getenv("ARCHIVE_SYNC") == "external") Archive.Sync.EXTERNAL else Archive.Sync.GIT
+    val archive = env("ARCHIVE")?.let {
+        val sync = if (env("ARCHIVE_SYNC") == "external") Archive.Sync.EXTERNAL else Archive.Sync.GIT
         Archive(File(it), sync)
     }
     val store = EventStore(File(dir, "events.jsonl"))
@@ -44,17 +47,17 @@ fun main() = runBlocking {
     val surveyor = CityOnboarding(open.boundaries, open.population, open.features)
     val cities = archive?.let { SurveyCache(it, OnboardedDirectory(surveyor)) } ?: OnboardedDirectory(surveyor)
     // Every node must list the same roster: panels are drawn from it. Alone, a node is its own panel of one.
-    val roster = System.getenv("REFEREES")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)?.plus(keys.pub)?.distinct() ?: listOf(keys.pub)
+    val roster = env("REFEREES")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)?.plus(keys.pub)?.distinct() ?: listOf(keys.pub)
     // PEERS: other nodes' relay addresses (wss://…), comma-separated. Their events and media reach this one.
     // One is enough: the roster's nodes announce themselves, and announced nodes are followed too.
-    val publicUrl = System.getenv("PUBLIC_URL")?.trim()?.takeIf { it.startsWith("wss://") }
-    val peers = System.getenv("PEERS")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty).orEmpty()
+    val publicUrl = env("PUBLIC_URL")?.trim()?.takeIf { it.startsWith("wss://") }
+    val peers = env("PEERS")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty).orEmpty()
         .let { Peers(it, store, io.ktor.client.HttpClient(io.ktor.client.engine.cio.CIO) { install(io.ktor.client.plugins.websocket.WebSockets) }, this, roster.toSet(), publicUrl) }
     val media = MediaStore(File(dir, "media"), elsewhere = peers::fetch)
     // VOSK_MODEL: a Vosk model directory (alphacephei.com/vosk/models), for hearing the challenge. Needs ffmpeg.
-    val ears = System.getenv("VOSK_MODEL")?.let { VoskEars(File(it)) }
+    val ears = env("VOSK_MODEL")?.let { VoskEars(File(it)) }
     val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::get, ears = ears),
-        attestation = if (System.getenv("ATTESTATION") == "off") null else KeyAttestation(),
+        attestation = if (env("ATTESTATION") == "off") null else KeyAttestation(),
         // The photo matcher: evidence photos are private, so each is opened with the key its reference carries.
         photos = { ref -> Media.parse(ref).let { (url, key) -> media.get(url.substringAfterLast('/'))?.let { if (key != null) Media.open(it, key) else it } } })
     referee.restore()

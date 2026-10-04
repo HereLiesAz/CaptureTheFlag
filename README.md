@@ -178,6 +178,8 @@ Each list shows the top three. Making a list is what makes a round memorable: at
 
 A node is a Nostr relay, referee and city surveyor in one (`node/`, design in `docs/DECENTRALIZED.md`). It is the prototype of the decentralized server: one machine that stays on.
 
+To run one for real, behind TLS in Docker, see [`docs/NODE.md`](docs/NODE.md): `DOMAIN=node.example.org docker compose -f deploy/compose.yaml up -d --build`. For development:
+
 ~~~
 PORT=7447 DATA_DIR=./node-data ./gradlew :node:run
 # with a private GitHub repo clone as the shared archive
