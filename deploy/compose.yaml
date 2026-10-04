@@ -1,0 +1,26 @@
+# One node behind Caddy, which gets and renews its TLS certificate (phones only talk wss://).
+#   DOMAIN=node.example.org docker compose -f deploy/compose.yaml up -d --build
+# Every setting is described in docs/NODE.md.
+services:
+  node:
+    build: { context: .., dockerfile: node/Dockerfile }
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: wss://${DOMAIN:?set DOMAIN to this node's hostname}
+      PEERS: ${PEERS:-}
+      REFEREES: ${REFEREES:-}
+      VOSK_MODEL: ${VOSK_MODEL:-}
+    volumes:
+      - node-data:/data
+      # - ./vosk-model-small-en-us-0.15:/models/vosk:ro   # then VOSK_MODEL=/models/vosk
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment: { DOMAIN: "${DOMAIN}" }
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+volumes:
+  node-data:
+  caddy-data:

@@ -9,6 +9,12 @@ application {
     mainClass.set("com.hereliesaz.capturetheflag.node.MainKt")
 }
 
+// The shared module's Compose libraries reach the runtime classpath by more than one route;
+// one copy of each jar is enough.
+distributions {
+    main { contents { duplicatesStrategy = DuplicatesStrategy.EXCLUDE } }
+}
+
 dependencies {
     implementation(project(":shared"))
     implementation("io.ktor:ktor-server-core:3.6.0")
@@ -23,6 +29,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("fr.acinq.secp256k1:secp256k1-kmp:0.24.0")
     implementation("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm:0.24.0")
+    // Ktor and Netty log through SLF4J; without a backend a node says nothing about its own trouble.
+    runtimeOnly("org.slf4j:slf4j-simple:2.0.20")
 
     testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host:3.6.0")
