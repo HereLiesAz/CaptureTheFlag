@@ -35,17 +35,25 @@ class KeyAttestationTest {
     }
     private fun seq(vararg xs: ByteArray) = tlv(0x30, xs.fold(ByteArray(0)) { a, b -> a + b })
 
+    private fun set(vararg xs: ByteArray) = tlv(0x31, xs.fold(ByteArray(0)) { a, b -> a + b })
+    private val signer = ByteArray(32) { 7 }
+    private val signerHex = signer.joinToString("") { "%02x".format(it) }
+
+    /** attestationApplicationId ([709]): the app's package and its signing-certificate digest. */
+    private fun appId(pkg: String = KeyAttestation.APP, digest: ByteArray = signer) =
+        tlv(0xbf8545, tlv(0x04, seq(set(seq(tlv(0x04, pkg.toByteArray()), tlv(0x02, byteArrayOf(1)))), set(tlv(0x04, digest)))))
+
     /** KeyDescription: version, security level, keymint version and level, challenge, unique id, software list, hardware list. */
-    private fun description(challenge: ByteArray, level: Int = 1, locked: Boolean = true, boot: Int = 0): ByteArray {
+    private fun description(challenge: ByteArray, level: Int = 1, locked: Boolean = true, boot: Int = 0, app: ByteArray? = appId()): ByteArray {
         val rootOfTrust = seq(tlv(0x04, ByteArray(32)), tlv(0x01, byteArrayOf(if (locked) -1 else 0)), tlv(0x0a, byteArrayOf(boot.toByte())), tlv(0x04, ByteArray(32)))
         return seq(
             tlv(0x02, byteArrayOf(100)), tlv(0x0a, byteArrayOf(level.toByte())), tlv(0x02, byteArrayOf(100)), tlv(0x0a, byteArrayOf(level.toByte())),
-            tlv(0x04, challenge), tlv(0x04, ByteArray(0)), seq(), seq(tlv(0xbf8540, rootOfTrust)),
+            tlv(0x04, challenge), tlv(0x04, ByteArray(0)), app?.let { seq(it) } ?: seq(), seq(tlv(0xbf8540, rootOfTrust)),
         )
     }
 
-    private fun cert(subject: KeyPair, issuer: KeyPair, name: String, issuerName: String, ext: ByteArray?): X509Certificate {
-        val b = JcaX509v3CertificateBuilder(X500Name(issuerName), BigInteger.ONE, Date(0), Date(4_000_000_000_000), X500Name(name), subject.public)
+    private fun cert(subject: KeyPair, issuer: KeyPair, name: String, issuerName: String, ext: ByteArray?, until: Long = 4_000_000_000_000): X509Certificate {
+        val b = JcaX509v3CertificateBuilder(X500Name(issuerName), BigInteger.ONE, Date(0), Date(until), X500Name(name), subject.public)
         ext?.let { b.addExtension(ASN1ObjectIdentifier(KeyAttestation.OID), false, it) }
         return JcaX509CertificateConverter().getCertificate(b.build(JcaContentSignerBuilder("SHA256withECDSA").build(issuer.private)))
     }
@@ -71,6 +79,24 @@ class KeyAttestationTest {
         assertEquals("Attestation not rooted at Google", verifier.check(attested(evidence, trustedRoot = ec()), player.pub))
         val a = attested(evidence)
         assertEquals("Evidence signature doesn't match", verifier.check(a.copy(lat = 30.0), player.pub), "moved after signing")
+        assertEquals("No app named on the key", verifier.check(attested(evidence, description(player.pub.hex(), app = null)), player.pub))
+        assertEquals("Key wasn't made by this app", verifier.check(attested(evidence, description(player.pub.hex(), app = appId("com.example.cheat"))), player.pub))
+    }
+
+    @Test fun withSignersSetOnlyTheRealBuildPasses() {
+        val strict = KeyAttestation(setOf(root.public.encoded.toList()), signers = setOf(signerHex))
+        assertNull(strict.check(attested(evidence), player.pub))
+        assertEquals("Key was made by a differently signed app",
+            strict.check(attested(evidence, description(player.pub.hex(), app = appId(digest = ByteArray(32) { 9 }))), player.pub), "same package, re-signed")
+    }
+
+    @Test fun anExpiredIssuerFails() {
+        val (leaf, mid) = ec() to ec()
+        val chain = listOf(cert(leaf, mid, "CN=leaf", "CN=mid", description(player.pub.hex())), cert(mid, root, "CN=mid", "CN=root", null, until = 1_000), rootCert)
+        val sig = Signature.getInstance("SHA256withECDSA").run { initSign(leaf.private); update(evidence.signedBytes()); sign() }
+        val b64 = Base64.getEncoder()
+        val e = evidence.copy(att = Evidence.Attestation(chain.map { b64.encodeToString(it.encoded) }, b64.encodeToString(sig)))
+        assertEquals("Attestation certificate expired", verifier.check(e, player.pub))
     }
 
     @Test fun googlesRootsLoad() = assertEquals(2, KeyAttestation.googleRoots().size)

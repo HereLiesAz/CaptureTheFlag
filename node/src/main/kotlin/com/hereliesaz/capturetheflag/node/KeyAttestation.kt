@@ -18,7 +18,17 @@ import java.util.Base64
  * the point, and it will annoy some players. Google's revocation list is online-only, so it isn't
  * checked; a revoked device model passes until the roots themselves change.
  */
-class KeyAttestation(private val roots: Set<List<Byte>> = googleRoots()) {
+class KeyAttestation(
+    private val roots: Set<List<Byte>> = googleRoots(),
+    /** The app that must have made the key: a cheat build can ask for an attested key just as well. */
+    private val app: String = APP,
+    /**
+     * SHA-256 (hex) of the signing certificates allowed to have made the key. Empty checks the package
+     * name only, which a re-signed copy of the app also passes; set it for real play.
+     */
+    private val signers: Set<String> = emptySet(),
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
 
     /** Null when [e] is attested by [player]'s own hardware key; otherwise why not. */
     fun check(e: Evidence, player: String): String? {
@@ -30,6 +40,9 @@ class KeyAttestation(private val roots: Set<List<Byte>> = googleRoots()) {
         for (i in 0 until chain.lastIndex) if (runCatching { chain[i].verify(chain[i + 1].publicKey) }.isFailure) return "Attestation chain broken"
         val root = chain.last()
         if (root.publicKey.encoded.toList() !in roots || runCatching { root.verify(root.publicKey) }.isFailure) return "Attestation not rooted at Google"
+        // The leaf's own dates are often nonsense on real phones; the issuers' must hold.
+        val now = java.util.Date(clock())
+        if (chain.drop(1).any { runCatching { it.checkValidity(now) }.isFailure }) return "Attestation certificate expired"
 
         val leaf = chain.first()
         val desc = leaf.getExtensionValue(OID)?.let { runCatching { KeyDescription.parse(Der.read(it).content) }.getOrNull() }
@@ -38,6 +51,9 @@ class KeyAttestation(private val roots: Set<List<Byte>> = googleRoots()) {
         if (!desc.challenge.contentEquals(player.hex())) return "Key belongs to someone else"
         val trust = desc.rootOfTrust ?: return "No root of trust"
         if (!trust.locked || trust.bootState != VERIFIED) return "Phone is unlocked or rooted"
+        val made = desc.app ?: return "No app named on the key"
+        if (app !in made.packages) return "Key wasn't made by this app"
+        if (signers.isNotEmpty() && made.signers.none { it in signers }) return "Key was made by a differently signed app"
 
         val alg = if (leaf.publicKey.algorithm == "EC") "SHA256withECDSA" else "SHA256withRSA"
         val ok = runCatching {
@@ -47,14 +63,23 @@ class KeyAttestation(private val roots: Set<List<Byte>> = googleRoots()) {
     }
 
     /** The parts of Android's KeyDescription (the attestation extension) that matter here. */
-    internal class KeyDescription(val securityLevel: Int, val challenge: ByteArray, val rootOfTrust: RootOfTrust?) {
+    internal class KeyDescription(val securityLevel: Int, val challenge: ByteArray, val rootOfTrust: RootOfTrust?, val app: AppId?) {
         class RootOfTrust(val locked: Boolean, val bootState: Int)
+        /** attestationApplicationId: the requesting app's package names and signing-certificate digests (hex). */
+        class AppId(val packages: Set<String>, val signers: Set<String>)
         companion object {
             fun parse(der: ByteArray): KeyDescription {
                 val f = Der.read(der).children()
-                val hardware = f[7].children()
-                val rot = hardware.firstOrNull { it.cls == 2 && it.number == 704 }?.let { Der.read(it.content).children() }
-                return KeyDescription(f[1].int(), f[4].content, rot?.let { RootOfTrust(it[1].content.single() != 0.toByte(), it[2].int()) })
+                val lists = f[6].children() + f[7].children()
+                val rot = lists.firstOrNull { it.cls == 2 && it.number == 704 }?.let { Der.read(it.content).children() }
+                val app = lists.firstOrNull { it.cls == 2 && it.number == 709 }?.let { tagged ->
+                    val (packages, digests) = Der.read(Der.read(tagged.content).content).children()
+                    AppId(
+                        packages.children().map { String(it.children()[0].content) }.toSet(),
+                        digests.children().map { d -> d.content.joinToString("") { "%02x".format(it) } }.toSet(),
+                    )
+                }
+                return KeyDescription(f[1].int(), f[4].content, rot?.let { RootOfTrust(it[1].content.single() != 0.toByte(), it[2].int()) }, app)
             }
         }
     }
@@ -92,6 +117,7 @@ class KeyAttestation(private val roots: Set<List<Byte>> = googleRoots()) {
 
     companion object {
         const val OID = "1.3.6.1.4.1.11129.2.1.17"
+        const val APP = "com.hereliesaz.capturetheflag"
         private const val TEE = 1
         private const val STRONGBOX = 2
         private const val VERIFIED = 0

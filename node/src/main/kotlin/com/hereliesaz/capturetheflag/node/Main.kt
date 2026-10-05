@@ -57,7 +57,9 @@ fun main() = runBlocking {
     // VOSK_MODEL: a Vosk model directory (alphacephei.com/vosk/models), for hearing the challenge. Needs ffmpeg.
     val ears = env("VOSK_MODEL")?.let { VoskEars(File(it)) }
     val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::get, ears = ears),
-        attestation = if (env("ATTESTATION") == "off") null else KeyAttestation(),
+        // ATTESTATION_SIGNERS: SHA-256 (hex) of the app's signing certificate(s), comma-separated.
+        attestation = if (env("ATTESTATION") == "off") null
+            else KeyAttestation(signers = env("ATTESTATION_SIGNERS")?.split(',')?.map { it.trim().lowercase().replace(":", "") }?.filter(String::isNotEmpty)?.toSet().orEmpty()),
         // The photo matcher: evidence photos are private, so each is opened with the key its reference carries.
         photos = { ref -> Media.parse(ref).let { (url, key) -> media.get(url.substringAfterLast('/'))?.let { if (key != null) Media.open(it, key) else it } } })
     referee.restore()
