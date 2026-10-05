@@ -373,6 +373,8 @@ class NodeTest {
         net.keys.take(3).forEach { k -> net.store.add(k.sign(Kinds.OUTCOME, past, listOf(listOf("g", "g-old")), before)) }
         // And a stranger's forged game counts for nothing.
         val forger = Keys.generate()
+        // Dates are the signer's say-so: a "seasoned" announcement, backdated a month, buys nothing.
+        net.store.add(forger.sign(Kinds.NODE, "wss://forger.example", emptyList(), before - 31L * 86_400))
         net.store.add(forger.sign(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen("fake", "old town", 0, listOf(forger.pub), "x")), listOf(listOf("g", "g-fake")), before))
         net.store.add(forger.sign(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(1, emptyMap(), listOf(Outcome.AwardDto(forger.pub, 9_000_000, "self-made")), emptyList(), "Ended")), listOf(listOf("g", "g-fake")), before))
 
@@ -409,6 +411,16 @@ class NodeTest {
         net.flush()
         assertTrue(net.store.query(listOf(Filter(kinds = setOf(Kinds.SEED_DROP)))).isNotEmpty())
         assertEquals(1, net.live().map { it.games.getValue(game) }.distinct().size, "the four agree on a seed without it")
+    }
+
+    @Test fun theStoreRefusesEventsFromTheFutureAndOversizeOnes() = runTest {
+        val now = 2_000_000_000_000L
+        val store = EventStore { now }
+        val k = Keys.generate()
+        assertTrue(store.add(k.sign(Kinds.NOTE, "now", emptyList(), now / 1000)))
+        assertTrue(store.add(k.sign(Kinds.NOTE, "long ago", emptyList(), 1)), "the past is open: peers replay history")
+        assertFalse(store.add(k.sign(Kinds.NOTE, "tomorrow", emptyList(), now / 1000 + 86_400)))
+        assertFalse(store.add(k.sign(Kinds.NOTE, "x".repeat(EventStore.MAX_CONTENT + 1), emptyList(), now / 1000)))
     }
 
     @Test fun aRefereeWhoSignsTwoBatchesIsCaught() = runTest {

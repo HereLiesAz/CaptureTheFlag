@@ -105,6 +105,8 @@ class Referee(
         val scores = mutableMapOf<String, MutableMap<String, Double>>()
         /** Every award made before this round opened, by quorum: what levels are priced from, all round. */
         var frozen: List<Award>? = null
+        /** Who could be drawn, as of the open: replacements come from here. */
+        var pool: List<String> = emptyList()
         /** Secret highlights, aired when the round ends. */
         val held = mutableListOf<com.hereliesaz.capturetheflag.model.Highlight>()
         val uncommitted = mutableListOf<Secret>()
@@ -220,34 +222,55 @@ class Referee(
      * this node happened to referee, so every referee prices the same player the same way, and
      * frozen at round open, so nothing that happens mid-round moves the price.
      */
-    private suspend fun pastAwards(before: Long): List<Award> = standing(before).flatMap { s ->
-        s.outcome.awards.map { Award(it.user, s.open.city, s.game, it.points, it.reason, s.at) }
+    private suspend fun pastAwards(before: Long): List<Award> = trust(before).stood.flatMap { s ->
+        s.outcome.awards.map { Award(it.user, s.city, s.game, it.points, it.reason, s.at) }
     }
 
-    /** One batch's outcome as a quorum of its game's own panel signed it. */
-    private class Stood(val game: String, val open: GameOpen, val outcome: Outcome, val signers: List<String>, val at: Long)
+    /** One batch's outcome as a quorum of trusted keys signed it; [agreeing] is everyone who signed the same. */
+    private class Stood(val game: String, val city: String, val outcome: Outcome, val agreeing: List<String>, val at: Long)
+
+    /** What the signed history says, as of a round's open: the outcomes that stood, and who earned trust. */
+    private class Trust(val stood: List<Stood>, val earned: Set<String>)
+
+    /** A quorum by the roster's own size, never by the size of a panel some event names. */
+    private fun quorum() = minOf(PANEL_SIZE, roster.distinct().size) / 2 + 1
 
     /**
-     * Every outcome that stood before [before] (unix seconds), across the network: signed by a
-     * majority of its game's panel, counting only trusted keys. Anyone can sign a game open naming
-     * themselves its panel; without the trust check, they could award themselves any level.
+     * The network's signed history before [before] (unix seconds), trusted only as far as the roster
+     * vouches for it. Timestamps, game opens and panels are whatever their signers say, so none of
+     * them carries weight on its own: an outcome stands only when a quorum of trusted keys signed it,
+     * the quorum sized by the roster. First pass, trusted is the roster. A node earns trust by having
+     * announced itself and agreed with [AGREEMENTS] roster-stood outcomes, the first at least
+     * [KEY_AGE_DAYS] before (by the roster's own clocks). Second pass counts the earned too.
      */
-    private suspend fun standing(before: Long): List<Stood> {
-        val trusted = roster.toSet() + seasoned(before)
-        val panels = store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).filter { it.created_at < before }
-            .mapNotNull { e -> e.tag("g")?.let { g -> runCatching { Nostr.json.decodeFromString(GameOpen.serializer(), e.content) }.getOrNull()?.takeIf { e.pubkey in it.panel }?.let { g to it } } }
-            .toMap()
-        return store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).filter { it.created_at < before }
+    private suspend fun trust(before: Long): Trust {
+        val outcomes = store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).filter { it.created_at < before }
+        val cities = store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).filter { it.pubkey in roster }
+            .mapNotNull { e -> e.tag("g")?.let { g -> runCatching { Nostr.json.decodeFromString(GameOpen.serializer(), e.content).city }.getOrNull()?.let { g to it } } }.toMap()
+        val doubled = equivocated(before)
+        fun stood(trusted: Set<String>) = outcomes
             .groupBy { it.tag("g") to runCatching { Nostr.json.decodeFromString(Outcome.serializer(), it.content).seq }.getOrNull() }
             .mapNotNull { (key, signed) ->
                 val (g, seq) = key
-                val open = panels[g] ?: return@mapNotNull null
-                if (seq == null) return@mapNotNull null
-                val stood = signed.filter { it.pubkey in open.panel && it.pubkey in trusted }.distinctBy { it.pubkey }.groupBy { it.content }
-                    .entries.firstOrNull { it.value.size >= open.panel.size / 2 + 1 } ?: return@mapNotNull null
-                Stood(g!!, open, Nostr.json.decodeFromString(Outcome.serializer(), stood.key), stood.value.map { it.pubkey }, stood.value.minOf { it.created_at } * 1000)
+                if (g == null || seq == null) return@mapNotNull null
+                val byContent = signed.distinctBy { it.pubkey }.groupBy { it.content }
+                val (content, sigs) = byContent.entries.firstOrNull { (_, es) -> es.count { it.pubkey in trusted } >= quorum() } ?: return@mapNotNull null
+                val vouched = sigs.filter { it.pubkey in trusted }
+                Stood(g, cities[g] ?: "", Nostr.json.decodeFromString(Outcome.serializer(), content), sigs.map { it.pubkey }, vouched.minOf { it.created_at } * 1000)
             }
+        val first = stood(roster.toSet())
+        val announced = store.query(listOf(Filter(kinds = setOf(Kinds.NODE)))).map { it.pubkey }.toSet()
+        val earned = first.flatMap { s -> s.agreeing.map { it to s.at } }.groupBy({ it.first }, { it.second })
+            .filter { (k, times) -> k !in roster && k in announced && k !in doubled && times.size >= AGREEMENTS && times.min() <= before * 1000 - KEY_AGE_DAYS * 86_400_000 }
+            .keys
+        return Trust(if (earned.isEmpty()) first else stood(roster.toSet() + earned), earned)
     }
+
+    /** Keys that signed two different batches for one game and sequence before [before], by the public record. */
+    private suspend fun equivocated(before: Long): Set<String> =
+        store.query(listOf(Filter(kinds = setOf(Kinds.BATCH)))).filter { it.created_at < before }
+            .groupBy { Triple(it.pubkey, it.tag("g"), runCatching { Nostr.json.decodeFromString(Batch.serializer(), it.content).seq }.getOrNull()) }
+            .filter { (_, es) -> es.map { it.content }.distinct().size > 1 }.keys.map { it.first }.toSet()
 
     /** Hands over the chat that waited while each reader was cut off, now they aren't. */
     private suspend fun release(r: Round, g: Game) {
@@ -335,10 +358,13 @@ class Referee(
         val key = city.trim().lowercase()
         if (rounds.values.any { it.city == key && it.game?.phase !is GamePhase.Ended }) return
         val draw = lastSeed(key, e.created_at) + e.id
-        val panel = pool(e.created_at).sortedBy { Nostr.sha256((it + draw).toByteArray()).toHex() }.take(PANEL_SIZE)
+        val eligible = pool(e.created_at)
+        val panel = eligible.sortedBy { Nostr.sha256((it + draw).toByteArray()).toHex() }.take(PANEL_SIZE)
         if (keys.pub !in panel) return
         val id = "g-" + e.id.take(16)
         val r = Round(e, id, key, panel).also { rounds[id] = it; it.openedAt = clock() }
+        r.pool = eligible
+        r.frozen = pastAwards(e.created_at)
         early.remove(id)?.forEach { ceremony(r, it) }
     }
 
@@ -429,26 +455,15 @@ class Referee(
     }
 
     /**
-     * Who may referee a round opened at [before] (unix seconds): the configured roster, plus any
-     * node that opted in (announced itself), has a key at least [KEY_AGE_DAYS] old, and has signed
-     * at least [AGREEMENTS] outcomes that matched their quorum. Minus anyone ever caught signing
-     * two batches for one sequence.
+     * Who may referee a round opened at [before] (unix seconds): the configured roster, plus any node
+     * that earned trust (see [trust]). Minus anyone the public record shows signing two batches for
+     * one sequence. Read only from the store, never from what this node happened to see live, so
+     * every node with the same history draws the same pool.
      */
     private suspend fun pool(before: Long): List<String> {
-        val oldEnough = seasoned(before)
-        val agreed = standing(before).flatMap { it.signers }.groupingBy { it }.eachCount()
-        val earned = oldEnough.filter { (agreed[it] ?: 0) >= AGREEMENTS }
-        val doubled = store.query(listOf(Filter(kinds = setOf(Kinds.BATCH)))).filter { it.created_at < before }
-            .groupBy { Triple(it.pubkey, it.tag("g"), runCatching { Nostr.json.decodeFromString(Batch.serializer(), it.content).seq }.getOrNull()) }
-            .filter { (_, es) -> es.map { it.content }.distinct().size > 1 }.keys.map { it.first }.toSet()
-        return (roster + earned).distinct().filterNot { it in doubled || it in caught }.sorted()
+        val doubled = equivocated(before)
+        return (roster + trust(before).earned).distinct().filterNot { it in doubled }.sorted()
     }
-
-    /** Nodes that opted in (announced themselves) with a key at least [KEY_AGE_DAYS] old at [before] (unix seconds). */
-    private suspend fun seasoned(before: Long): Set<String> =
-        store.query(listOf(Filter(kinds = setOf(Kinds.NODE)))).filter { it.created_at < before }.map { it.pubkey }.toSet().filter { k ->
-            store.query(listOf(Filter(authors = setOf(k)))).minOfOrNull { it.created_at }?.let { it <= before - KEY_AGE_DAYS * 86_400 } == true
-        }.toSet()
 
     /** The last seed drawn in [city] before [before] (unix seconds), from its public commits and reveals; empty for a city's first round. */
     private suspend fun lastSeed(city: String, before: Long): String {
@@ -480,7 +495,7 @@ class Referee(
         val latest = r.panel.mapNotNull { r.lastHeard[it] }.maxOrNull() ?: return
         for (m in r.panel) {
             if (m == keys.pub || m in r.replacing || latest - (r.lastHeard[m] ?: latest) < SILENT_MS) continue
-            val into = pool(r.open.created_at).filterNot { it in r.terms || it in caught }
+            val into = r.pool.filterNot { it in r.terms }
                 .minByOrNull { Nostr.sha256((it + r.seed!!.toHex() + m).toByteArray()).toHex() } ?: continue
             r.replacing += m
             publish(Kinds.REPLACE, Nostr.json.encodeToString(Replace.serializer(), Replace(m, into)), r.id)
