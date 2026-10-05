@@ -1,7 +1,20 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// Releases are built by HereLiesAz/workflows (android-release): it passes -PversionCode and
+// -PversionName, and the upload key as KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD.
+// Local builds fall back to version.properties and stay unsigned. Nothing here increments anything.
+val versions = Properties().apply { rootProject.file("version.properties").takeIf { it.exists() }?.inputStream()?.use(::load) }
+val releaseCode = (findProperty("versionCode") as String?)?.toInt()
+    ?: versions.getProperty("versionCode")?.toInt() ?: 1
+val releaseName = (findProperty("versionName") as String?)
+    ?: versions.getProperty("versionName")
+    ?: listOf("versionMajor", "versionMinor", "versionPatch").joinToString(".") { versions.getProperty(it, "0") }
+val uploadKey = System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() }?.let(::file)?.takeIf { it.exists() }
 
 android {
     namespace = "com.hereliesaz.capturetheflag"
@@ -11,8 +24,23 @@ android {
         applicationId = "com.hereliesaz.capturetheflag"
         minSdk = 28
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = releaseCode
+        versionName = releaseName
+    }
+
+    signingConfigs {
+        if (uploadKey != null) create("upload") {
+            storeFile = uploadKey
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("KEY_ALIAS")
+            keyPassword = System.getenv("KEY_PASSWORD")?.takeIf { it.isNotBlank() } ?: System.getenv("KEYSTORE_PASSWORD")
+        }
+    }
+
+    buildTypes {
+        release {
+            if (uploadKey != null) signingConfig = signingConfigs.getByName("upload")
+        }
     }
 
     buildFeatures {
@@ -32,6 +60,9 @@ dependencies {
     androidTestImplementation(composeBom)
 
     implementation("androidx.activity:activity-compose:1.13.0")
+    // A transitive dependency still asks for fragment 1.1.0, too old for the Activity Result API we use;
+    // release builds fail lint on it.
+    implementation("androidx.fragment:fragment:1.9.1")
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.exifinterface:exifinterface:1.4.2")
     implementation("androidx.camera:camera-core:1.6.2")
