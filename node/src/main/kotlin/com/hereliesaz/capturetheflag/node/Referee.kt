@@ -136,6 +136,8 @@ class Referee(
     private val booth = Commentator(Random.Default)
     private val lock = Mutex()
     private val caught = mutableSetOf<String>()
+    /** Team chat that arrived before its round could forward it. */
+    private val earlyChat = mutableMapOf<String, Event>()
     /** Open requests waiting for their panel to be drawn. */
     private val opening = mutableListOf<Pair<Event, String>>()
     /** Rounds this node drew but wasn't drawn for: what a handover into one must match. */
@@ -158,7 +160,13 @@ class Referee(
         runCatching {
             lock.withLock {
                 // Once per message, however often it reaches this node: peers and restarts deliver repeats.
-                if (e.kind == Kinds.CHAT) return if (seen.add(e.id)) forward(e) else Unit
+                if (e.kind == Kinds.CHAT) {
+                    if (e.id in seen) return
+                    // Before its round has a game, keep it: marking it seen now would drop it for good.
+                    if (rounds[e.tag("g") ?: return]?.game == null) { earlyChat[e.id] = e; return }
+                    seen.add(e.id)
+                    return forward(e)
+                }
                 ingest(e)
                 advance(live = true)
             }
@@ -426,6 +434,7 @@ class Referee(
     private suspend fun advance(live: Boolean) {
         while (opening.isNotEmpty()) opening.removeAt(0).let { (e, city) -> openRound(e, city) }
         for (g in handovers.keys.toList()) takeOver(g)
+        if (live) for (e in earlyChat.values.toList()) if (rounds[e.tag("g")]?.game != null) { earlyChat.remove(e.id); if (seen.add(e.id)) forward(e) }
         // A round that never got a seed and a board (no quorum, no survey) stops blocking its city.
         rounds.entries.removeIf { (_, r) -> r.seed == null && live && clock() - r.openedAt > GameRules.SIGNUP_WINDOW }
         for (r in rounds.values.toList()) {

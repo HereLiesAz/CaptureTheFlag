@@ -19,10 +19,27 @@ import javax.crypto.spec.GCMParameterSpec
 class Identity(context: Context) {
     private val prefs = context.getSharedPreferences("ctf", Context.MODE_PRIVATE)
 
+    /**
+     * The player's key: their levels, career and rivalries hang on it, so it's never replaced lightly.
+     * A stored key that won't open is retried; it is set aside (not overwritten) and a new one made
+     * only when the keystore no longer holds the key that wrapped it, since then nothing can open it.
+     */
     val keys: Keys by lazy {
-        prefs.getString(SECRET, null)?.let { runCatching { Keys(open(it)) }.getOrNull() }
-            ?: Keys.generate().also { prefs.edit().putString(SECRET, seal(it.secret)).apply() }
+        val stored = prefs.getString(SECRET, null) ?: return@lazy fresh()
+        repeat(3) { attempt ->
+            runCatching { return@lazy Keys(open(stored)) }
+            if (!wrapKeyExists()) {
+                prefs.edit().putString("$SECRET.lost.${System.currentTimeMillis()}", stored).apply()
+                return@lazy fresh()
+            }
+            Thread.sleep(200L * (attempt + 1))
+        }
+        error("Couldn't open this phone's player key. It's still stored; try again.")
     }
+
+    private fun fresh() = Keys.generate().also { prefs.edit().putString(SECRET, seal(it.secret)).apply() }
+
+    private fun wrapKeyExists() = runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.containsAlias(ALIAS) }.getOrDefault(true)
 
     /** The node to play on (`wss://…`), or null for the built-in single-phone test server. */
     var node: String?

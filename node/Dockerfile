@@ -12,6 +12,8 @@ FROM eclipse-temurin:27-jre
 # ffmpeg: Vosk hears the challenge in stream audio through it.
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/node/build/install/node /opt/node
+# A fresh volume takes the ownership of the directory it mounts over: make it the node's user's.
+RUN mkdir -p /data && chown 1000:1000 /data
 ENV PORT=7447 DATA_DIR=/data
 VOLUME /data
 EXPOSE 7447

@@ -49,6 +49,7 @@ object GameView {
             flagZone = mine(game.flagZone),
             flagRing = mine(game.flagRing),
             dark = game.dark.filterTo(mutableSetOf()) { it == me?.id },
+            sense = me?.let { m -> com.hereliesaz.capturetheflag.engine.GameEngine.flagSense(game, m.id)?.let { (c, r) -> mapOf(m.id to com.hereliesaz.capturetheflag.model.SenseCircle(c, r)) } }.orEmpty(),
         )
     }
 }
