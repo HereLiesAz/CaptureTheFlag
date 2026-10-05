@@ -423,6 +423,35 @@ class NodeTest {
         assertFalse(store.add(k.sign(Kinds.NOTE, "x".repeat(EventStore.MAX_CONTENT + 1), emptyList(), now / 1000)))
     }
 
+    @Test fun forgedHandoversAreIgnoredAndNeverCrashANode() = runTest {
+        val net = Network(6)
+        net.send(action(Keys.generate(), Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).first().tag("g")!!
+        val panel = net.referees.firstNotNullOf { it.panelOf(game) }
+        val victim = net.keys.indexOfFirst { it.pub !in panel }
+        val (a, b) = Keys.generate() to Keys.generate()
+        val fake = action(a, Action.Open("Nowhere"), city = "nowhere", at = net.now / 1000)
+        fun handover(seed: String, g: String, open: Event) = Handover(open, "nowhere", listOf(a.pub, b.pub, net.keys[victim].pub), mapOf(a.pub to listOf(1L, Long.MAX_VALUE)), seed, emptyList())
+        for ((g, open, seed) in listOf(Triple("g-fake", fake, "00".repeat(32)), Triple("g-fake2", fake, "zz"), Triple(game, net.store.query(listOf(Filter(kinds = setOf(Kinds.ACTION)))).first(), "01"))) {
+            for (k in listOf(a, b)) net.send(k.sign(Kinds.HANDOVER, Nip44.seal(Nostr.json.encodeToString(Handover.serializer(), handover(seed, g, open)), k, net.keys[victim].pub), listOf(listOf("g", g), listOf("p", net.keys[victim].pub))))
+        }
+        net.flush()
+        assertTrue(net.referees[victim].games.isEmpty(), "strangers can't enrol a node in a round")
+        assertNull(net.referees[victim].panelOf(game), "nor hand it a real one")
+    }
+
+    @Test fun theArchiveNeverWritesOutsideItsFolder() {
+        val root = createTempDirectory("archive").toFile()
+        val archive = Archive(File(root, "repo").apply { mkdirs() }, Archive.Sync.EXTERNAL)
+        val k = Keys.generate()
+        archive.record(k.sign(Kinds.NOTE, "x", listOf(listOf("g", "../escaped"))))
+        archive.record(k.sign(Kinds.NOTE, "y", listOf(listOf("g", "nodir/x"))))
+        archive.record(k.sign(Kinds.NOTE, "z", listOf(listOf("g", "g-ok"))))
+        assertFalse(File(root, "repo/escaped.jsonl").exists())
+        assertTrue(File(root, "repo/events").listFiles()!!.all { it.parentFile.name == "events" && !it.name.contains("/") })
+        assertEquals(3, archive.replay().size)
+    }
+
     @Test fun aRefereeWhoSignsTwoBatchesIsCaught() = runTest {
         val net = Network(5)
         val p = Keys.generate()

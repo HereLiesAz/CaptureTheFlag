@@ -64,7 +64,12 @@ fun main() = runBlocking {
 
     println("node ${keys.pub} on ws://0.0.0.0:$port/ (media at /media/) with ${store.size()} events" + (archive?.let { ", archiving to ${it.root}" } ?: ""))
 
-    launch { store.live.collect { referee.accept(it); archive?.record(it) } }
+    launch {
+        store.live.collect { e ->
+            referee.accept(e)
+            runCatching { archive?.record(e) }.onFailure { System.err.println("archive: skipped event ${e.id}: $it") }
+        }
+    }
     // A week back is every live round, and then some.
     peers.start(since = System.currentTimeMillis() / 1000 - 7 * 24 * 3600)
     publicUrl?.let { peers.announce(keys, it) }

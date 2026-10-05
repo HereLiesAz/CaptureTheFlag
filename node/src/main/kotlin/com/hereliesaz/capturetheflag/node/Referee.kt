@@ -130,6 +130,9 @@ class Referee(
     private val caught = mutableSetOf<String>()
     /** Open requests waiting for their panel to be drawn. */
     private val opening = mutableListOf<Pair<Event, String>>()
+    /** Rounds this node drew but wasn't drawn for: what a handover into one must match. */
+    private class Observed(val open: Event, val city: String, val panel: List<String>, val pool: List<String>)
+    private val observed = mutableMapOf<String, Observed>()
     /** Handovers for rounds this node hasn't joined yet: game → sender → content. */
     private val handovers = mutableMapOf<String, MutableMap<String, String>>()
 
@@ -143,13 +146,16 @@ class Referee(
 
     /** Takes in any event from the network and moves every game as far as it can go. */
     suspend fun accept(e: Event) {
-        lock.withLock {
-            // Once per message, however often it reaches this node: peers and restarts deliver repeats.
-            if (e.kind == Kinds.CHAT) return if (seen.add(e.id)) forward(e) else Unit
-            ingest(e)
-            advance(live = true)
-        }
-        match(e)
+        // Anyone can send anything: one malformed event must never stop this node refereeing.
+        runCatching {
+            lock.withLock {
+                // Once per message, however often it reaches this node: peers and restarts deliver repeats.
+                if (e.kind == Kinds.CHAT) return if (seen.add(e.id)) forward(e) else Unit
+                ingest(e)
+                advance(live = true)
+            }
+            match(e)
+        }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it else System.err.println("referee: skipped event ${e.id}: $it") }
     }
 
     /**
@@ -360,13 +366,15 @@ class Referee(
         val draw = lastSeed(key, e.created_at) + e.id
         val eligible = pool(e.created_at)
         val panel = eligible.sortedBy { Nostr.sha256((it + draw).toByteArray()).toHex() }.take(PANEL_SIZE)
-        if (keys.pub !in panel) return
-        val id = "g-" + e.id.take(16)
+        if (keys.pub !in panel) { observed[id(e)] = Observed(e, key, panel, eligible); return }
+        val id = id(e)
         val r = Round(e, id, key, panel).also { rounds[id] = it; it.openedAt = clock() }
         r.pool = eligible
         r.frozen = pastAwards(e.created_at)
         early.remove(id)?.forEach { ceremony(r, it) }
     }
+
+    private fun id(open: Event) = "g-" + open.id.take(16)
 
     private fun ceremony(r: Round, e: Event) {
         if (e.pubkey !in r.first && e.pubkey !in r.terms) return
@@ -427,8 +435,15 @@ class Referee(
         if (live && keys.pub in sitting && keys.pub !in r.reveals) publish(Kinds.SEED_REVEAL, """{"share":"${share.toHex()}"}""", r.id)
         val unrevealed = sitting.filter { p -> r.reveals[p]?.let { Nostr.sha256(it).toHex() } != r.commits[p] }
         if (unrevealed.isNotEmpty()) { if (late) dropFromSeed(r, unrevealed); return }
-        val seed = Nostr.sha256(sitting.map { r.reveals.getValue(it) }.reduce(ByteArray::plus))
+        val seed = seedOf(r) ?: return
         if (r.seed?.contentEquals(seed) != true) start(r, seed)
+    }
+
+    /** The seed the public commits, reveals and drop votes make, or null while they don't make one yet. */
+    private fun seedOf(r: Round): ByteArray? {
+        val sitting = sitting(r.first, r.drops, r.quorum) ?: return null
+        if (sitting.any { p -> r.reveals[p]?.let { Nostr.sha256(it).toHex() } != r.commits[p] }) return null
+        return Nostr.sha256(sitting.map { r.reveals.getValue(it) }.reduce(ByteArray::plus))
     }
 
     /** Votes, once each, to leave [who] out of the seed. Never a member whose reveal this referee holds. */
@@ -527,23 +542,47 @@ class Referee(
     }
 
     /**
-     * A round this node was drawn into mid-game: joined once a quorum of the panel handed over the
-     * same round. It replays every batch from the start with the plaintext it was given.
+     * A round this node was drawn into mid-game. Nothing in a handover is taken on its word: the open
+     * request must be the one this node saw and drew a panel for, and the panel must be that draw
+     * changed only by swaps a quorum of serving members voted for in public, with this node among
+     * them. A quorum of that panel must have sent the same handover, and the seed is computed here
+     * from the public commits and reveals. What it can't check, the plaintext of sealed events, is
+     * what that quorum vouches for; they already decide the round.
      */
     private suspend fun takeOver(game: String) {
+        val seen = observed[game] ?: return
         val sent = handovers[game] ?: return
-        val (content, senders) = sent.entries.groupBy({ it.value }, { it.key }).maxByOrNull { it.value.size } ?: return
+        val panel = swapped(game, seen.panel)
+        if (keys.pub !in panel) return
+        val (content, senders) = sent.filterKeys { it in panel }.entries.groupBy({ it.value }, { it.key }).maxByOrNull { it.value.size } ?: return
+        if (senders.size < seen.panel.size / 2 + 1) return
         val h = runCatching { Nostr.json.decodeFromString(Handover.serializer(), content) }.getOrNull() ?: return
-        if (keys.pub !in h.panel || senders.count { it in h.panel } < h.panel.size / 2 + 1) return
-        if (!h.open.valid()) return
-        val r = Round(h.open, game, h.city, h.terms.keys.filter { h.terms.getValue(it)[0] == 1L }.sorted())
-        r.panel = h.panel
+        if (h.open.id != seen.open.id || h.panel != panel) return
+        if (!h.terms.keys.all { it in seen.panel || it in panel } || h.terms.values.any { it.size != 2 || it[0] > it[1] }) return
+        val r = Round(seen.open, game, seen.city, seen.panel)
+        r.panel = panel
         r.terms.clear(); h.terms.forEach { (k, v) -> r.terms[k] = v.toMutableList() }
-        r.bodies = h.bodies.associate { it[0] to it[1] }
+        r.bodies = h.bodies.filter { it.size == 2 }.associate { it[0] to it[1] }
+        early[game].orEmpty().forEach { ceremony(r, it) }
+        val seed = seedOf(r) ?: return
         rounds[game] = r
-        handovers.remove(game)
-        start(r, h.seed.hex())
-        early.remove(game)?.forEach { ceremony(r, it) }
+        handovers.remove(game); early.remove(game); observed.remove(game)
+        r.pool = seen.pool
+        r.frozen = pastAwards(seen.open.created_at)
+        start(r, seed)
+    }
+
+    /** [drawn], changed by each swap a quorum of the then-serving members voted for, in turn. */
+    private fun swapped(game: String, drawn: List<String>): List<String> {
+        val votes = playerEvents[game].orEmpty().values.filter { it.kind == Kinds.REPLACE }
+            .mapNotNull { e -> runCatching { Nostr.json.decodeFromString(Replace.serializer(), e.content) }.getOrNull()?.let { e.pubkey to it } }
+        var panel = drawn
+        while (true) {
+            val swap = votes.groupBy({ it.second }, { it.first })
+                .entries.firstOrNull { (v, voters) -> v.out in panel && v.into !in panel && v.into !in drawn && voters.distinct().count { it in panel && it != v.out } >= drawn.size / 2 + 1 }
+                ?.key ?: return panel
+            panel = panel.map { if (it == swap.out) swap.into else it }
+        }
     }
 
     /** A player event's plaintext: opened with this referee's key, or from its handover. */
