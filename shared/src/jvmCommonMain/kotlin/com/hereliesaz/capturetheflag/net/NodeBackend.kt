@@ -43,6 +43,9 @@ import java.util.concurrent.ConcurrentHashMap
  * panel, and waits for the panel's `outcome` to say how it went. What it shows is the view the
  * referees sealed to this player after the latest batch, never more.
  *
+ * Trust comes from the node's roster (`GET /roster`): a round opens only when a quorum of its
+ * panel's roster members announce it, and everything after counts only from that panel.
+ *
  * Not yet: city onboarding progress (the node surveys on its own).
  */
 class NodeBackend(
