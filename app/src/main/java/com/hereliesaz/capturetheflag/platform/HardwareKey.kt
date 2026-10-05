@@ -21,18 +21,24 @@ import java.security.spec.ECGenParameterSpec
  * unattested, and referees that require attestation refuse it.
  */
 class HardwareKey(private val player: Keys) {
-    private val alias = "ctf-evidence-${player.pub.take(16)}"
+    private val prefix = "ctf-evidence-${player.pub.take(16)}-"
 
     fun sign(bytes: ByteArray): Evidence.Attestation? = runCatching {
+        // A new key each day: the chain records the phone's state when the key was made, so a key made
+        // on a clean phone mustn't keep vouching after someone unlocks it.
+        val alias = prefix + java.time.LocalDate.now(java.time.ZoneOffset.UTC)
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        if (!ks.containsAlias(alias)) make()
+        if (!ks.containsAlias(alias)) {
+            ks.aliases().toList().filter { it.startsWith(prefix) && it != alias }.forEach(ks::deleteEntry)
+            make(alias)
+        }
         val key = ks.getKey(alias, null) as PrivateKey
         val sig = Signature.getInstance("SHA256withECDSA").run { initSign(key); update(bytes); sign() }
         val chain = ks.getCertificateChain(alias).map { Base64.encodeToString(it.encoded, Base64.NO_WRAP) }
         Evidence.Attestation(chain, Base64.encodeToString(sig, Base64.NO_WRAP))
     }.getOrNull()
 
-    private fun make() {
+    private fun make(alias: String) {
         KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").apply {
             initialize(
                 KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)

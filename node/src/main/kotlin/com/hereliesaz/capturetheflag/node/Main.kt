@@ -56,15 +56,24 @@ fun main() = runBlocking {
     val media = MediaStore(File(dir, "media"), elsewhere = peers::fetch)
     // VOSK_MODEL: a Vosk model directory (alphacephei.com/vosk/models), for hearing the challenge. Needs ffmpeg.
     val ears = env("VOSK_MODEL")?.let { VoskEars(File(it)) }
-    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::get, ears = ears),
-        attestation = if (env("ATTESTATION") == "off") null else KeyAttestation(),
-        // The photo matcher: evidence photos are private, so each is opened with the key its reference carries.
-        photos = { ref -> Media.parse(ref).let { (url, key) -> media.get(url.substringAfterLast('/'))?.let { if (key != null) Media.open(it, key) else it } } })
+    // Evidence photos are private: each is opened with the key its reference carries.
+    val photos: suspend (String) -> ByteArray? = { ref -> Media.parse(ref).let { (url, key) -> media.get(url.substringAfterLast('/'))?.let { if (key != null) Media.open(it, key) else it } } }
+    val matcher = com.hereliesaz.capturetheflag.data.PhotoMatcher { shot, reference -> Matcher.score(photos(shot) ?: return@PhotoMatcher null, photos(reference) ?: return@PhotoMatcher null) }
+    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, matcher = matcher, media = media::get, ears = ears),
+        // ATTESTATION_SIGNERS: SHA-256 (hex) of the app's signing certificate(s), comma-separated.
+        attestation = if (env("ATTESTATION") == "off") null
+            else KeyAttestation(signers = env("ATTESTATION_SIGNERS")?.split(',')?.map { it.trim().lowercase().replace(":", "") }?.filter(String::isNotEmpty)?.toSet().orEmpty()),
+        photos = photos)
     referee.restore()
 
     println("node ${keys.pub} on ws://0.0.0.0:$port/ (media at /media/) with ${store.size()} events" + (archive?.let { ", archiving to ${it.root}" } ?: ""))
 
-    launch { store.live.collect { referee.accept(it); archive?.record(it) } }
+    launch {
+        store.live.collect { e ->
+            referee.accept(e)
+            runCatching { archive?.record(e) }.onFailure { System.err.println("archive: skipped event ${e.id}: $it") }
+        }
+    }
     // A week back is every live round, and then some.
     peers.start(since = System.currentTimeMillis() / 1000 - 7 * 24 * 3600)
     publicUrl?.let { peers.announce(keys, it) }
@@ -73,7 +82,7 @@ fun main() = runBlocking {
 
     embeddedServer(Netty, port = port) {
         install(WebSockets)
-        routing { relay(store); media(media) }
+        routing { relay(store); media(media); roster(roster) }
     }.start(wait = true)
     Unit
 }

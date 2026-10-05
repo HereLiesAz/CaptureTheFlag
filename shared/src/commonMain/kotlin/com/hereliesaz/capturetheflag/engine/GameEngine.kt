@@ -589,11 +589,8 @@ class GameEngine(
         )
     }
 
-    /**
-     * Frees a jailed player. Jailbreak rules are not yet specified; this is the hook
-     * whatever mechanic is chosen will call once it verifies the rescue.
-     */
-    fun release(game: Game, player: PlayerId): Transition {
+    /** Frees a jailed player outright, for tests. In play, prisoners leave by a streamed jailbreak or parole. */
+    internal fun release(game: Game, player: PlayerId): Transition {
         val p = game.players[player]?.takeIf { it.isJailed && !it.disqualified } ?: return game.reject("Not jailed")
         return Transition(game.copy(players = game.players + (player to p.freed())))
     }
@@ -957,14 +954,18 @@ class GameEngine(
 
         /**
          * Flag Sense: a circle guaranteed to contain the enemy flag. Its offset is fixed per
-         * (game, player) so repeated looks can't be averaged down to the true spot.
+         * (game, player) so repeated looks can't be averaged down to the true spot, and drawn from
+         * the flag photo's private reference (which only the referees and the flag's own team hold),
+         * so knowing the game and the player doesn't let anyone subtract it back out. A view, which
+         * never carries the enemy flag, carries the circle instead ([Game.sense]).
          */
         fun flagSense(game: Game, player: PlayerId): Pair<GeoPoint, Double>? {
+            game.sense[player]?.let { return it.center to it.radiusM }
             val p = game.players[player] ?: return null
             val r = Progression.perksFor(p.level).flagSenseM
             val flag = game.flags[p.team.opponent] ?: return null
             if (r <= 0) return null
-            return offset(flag.location, r * 0.8, Random((game.id + player).hashCode())) to r
+            return offset(flag.location, r * 0.8, Random((flag.photo.imageUri + "|" + game.id + "|" + player).hashCode())) to r
         }
 
         /** A point up to [radiusM] from [p] (exactly [radiusM] if [exact]) in a random direction. */

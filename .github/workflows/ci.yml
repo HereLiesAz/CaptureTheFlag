@@ -1,0 +1,23 @@
+# Node and shared tests on every push and pull request; the result is reported to HereLiesAz/workflows.
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v5
+      - run: ./gradlew :node:test :shared:allTests
+      - if: always()
+        uses: HereLiesAz/workflows/.github/actions/ci-report@main
+        with:
+          summary: Node and shared tests

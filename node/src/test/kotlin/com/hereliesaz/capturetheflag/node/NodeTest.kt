@@ -43,6 +43,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val PANEL_TURNS = 6
+/** A selfie as a node stores it: the only kind a referee lets into a round. */
+private const val PIC = "https://node.example/media/0000000000000000000000000000000000000000000000000000000000000000"
 
 class NodeTest {
     @Test fun eventsSignAndVerify() {
@@ -116,12 +118,12 @@ class NodeTest {
         assertTrue(opened.all { it.pubkey == node.pub })
 
         players.forEachIndexed { i, p ->
-            val e = action(p, Action.Join("P$i", "selfie$i"), game, panel = listOf(node.pub))
+            val e = action(p, Action.Join("P$i", PIC), game, panel = listOf(node.pub))
             store.add(e); referee.accept(e)
         }
         // An action with a bad signature never reaches the store, so never reaches a batch.
         // One sent in the clear is refused: in a game, only the referee reads what players send.
-        val clear = action(Keys.generate(), Action.Join("Loud", "selfie"), game)
+        val clear = action(Keys.generate(), Action.Join("Loud", PIC), game)
         store.add(clear); referee.accept(clear)
         referee.flush()
         assertEquals(4, referee.games.getValue(game).signups.size)
@@ -155,7 +157,7 @@ class NodeTest {
         action(players[0], Action.Open("New Orleans"), city = "new orleans", at = now / 1000).let { store.add(it); referee.accept(it) }
         val game = referee.games.keys.single()
         suspend fun send(e: Event) { store.add(e); referee.accept(e) }
-        players.forEachIndexed { i, p -> send(action(p, Action.Join("P$i", "s$i"), game, panel = listOf(node.pub))) }
+        players.forEachIndexed { i, p -> send(action(p, Action.Join("P$i", PIC), game, panel = listOf(node.pub))) }
         val k = ByteArray(32) { 7 }.toHex()
         send(players[0].sign(Kinds.BLE_KEY, Sealed.forPanel(k, players[0], listOf(node.pub)), listOf(listOf("g", game))))
         referee.flush()
@@ -174,22 +176,36 @@ class NodeTest {
         assertEquals(commit.commitment, revealed.commitment, "the reveal matches what was committed")
     }
 
-    /** Five referees on one network. Referees in [down] neither hear nor speak. */
-    private class Network(n: Int, var now: Long = 1_000_000L) {
+    /**
+     * Referees on one network. Referees in [down] neither hear nor speak. With [separate], each has
+     * its own store and hears the log in its own shuffled order, as real nodes would: what one has
+     * seen, another may not have yet.
+     */
+    private class Network(n: Int, var now: Long = 1_000_000L, separate: Boolean = false, cities: (Int) -> com.hereliesaz.capturetheflag.data.CityDirectory = { DemoCityDirectory }) {
         val store = EventStore()
         val keys = List(n) { Keys.generate() }
-        val referees = keys.map { Referee(it, store, DemoCityDirectory, keys.map(Keys::pub)) { now } }
+        val stores = if (separate) keys.map { EventStore() } else keys.map { store }
+        val referees = keys.mapIndexed { i, k -> Referee(k, stores[i], cities(i), keys.map(Keys::pub)) { now } }
         val down = mutableSetOf<Int>()
+        private val orders = keys.indices.map { kotlin.random.Random(it) }
 
         suspend fun send(e: Event) { store.add(e); pump() }
 
         /** Delivers the whole log to every live referee (they ignore repeats) until it stops growing. */
         suspend fun pump() {
             var size = -1
-            while (store.size() != size) {
+            while (true) {
+                // Everything any live node has published reaches the shared log...
+                stores.forEachIndexed { i, st -> if (i !in down && st !== store) st.query(listOf(Filter())).forEach { store.add(it) } }
+                if (store.size() == size) break
                 size = store.size()
                 val all = store.query(listOf(Filter())).sortedWith(compareBy({ it.created_at }, { it.id }))
-                all.forEach { e -> referees.forEachIndexed { i, r -> if (i !in down) r.accept(e) } }
+                // ...and each live node hears it, in its own order when separate.
+                referees.forEachIndexed { i, r ->
+                    if (i in down) return@forEachIndexed
+                    val mine = if (stores[i] === store) all else all.shuffled(orders[i])
+                    mine.forEach { e -> if (stores[i] !== store) stores[i].add(e); r.accept(e) }
+                }
             }
         }
 
@@ -208,7 +224,7 @@ class NodeTest {
         assertEquals(5, net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).size)
         assertEquals(5, net.store.query(listOf(Filter(kinds = setOf(Kinds.SEED_REVEAL)))).size)
 
-        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", "s$i"), game, panel = panel)) }
+        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", PIC), game, panel = panel)) }
         net.flush()
         net.referees.forEach { assertEquals(4, it.games.getValue(game).signups.size) }
         assertEquals(5, net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).size, "every referee signs the outcome")
@@ -251,8 +267,8 @@ class NodeTest {
 
         // A referee can't play in its own game.
         val sneaky = net.keys.first { it.pub in panel }
-        net.send(action(sneaky, Action.Join("Ref", "s"), game, panel = panel)); net.flush()
-        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", "s$i"), game, panel = panel)) }
+        net.send(action(sneaky, Action.Join("Ref", PIC), game, panel = panel)); net.flush()
+        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", PIC), game, panel = panel)) }
         net.flush()
         net.now += GameRules.SIGNUP_WINDOW
         repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
@@ -299,8 +315,9 @@ class NodeTest {
 
         // And play goes on without it.
         val panel = net.referees[0].panelOf(game)!!
-        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", "s$i"), game, panel = panel)) }
-        net.flush()
+        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", PIC), game, panel = panel)) }
+        // The absent one may be next to lead: its turn passes to the next referee.
+        repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
         net.live().forEach { assertEquals(4, it.games.getValue(game).signups.size) }
 
         // It comes back late with its commitment and reveal: too late, the seed stands.
@@ -325,7 +342,7 @@ class NodeTest {
         net.send(action(players[0], Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
         val game = net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).first { it.tag("c") == "new orleans" }.tag("g")!!
         val l = Live(net, players, game, net.referees.firstNotNullOf { it.panelOf(game) })
-        players.forEachIndexed { i, p -> l.act(p, Action.Join("P$i", "s$i")) }
+        players.forEachIndexed { i, p -> l.act(p, Action.Join("P$i", PIC)) }
         net.now += GameRules.SIGNUP_WINDOW; net.flush()
         for (team in Team.entries) {
             val cap = l.g().players.values.first { it.team == team && it.role == Role.CAPTAIN }
@@ -373,6 +390,8 @@ class NodeTest {
         net.keys.take(3).forEach { k -> net.store.add(k.sign(Kinds.OUTCOME, past, listOf(listOf("g", "g-old")), before)) }
         // And a stranger's forged game counts for nothing.
         val forger = Keys.generate()
+        // Dates are the signer's say-so: a "seasoned" announcement, backdated a month, buys nothing.
+        net.store.add(forger.sign(Kinds.NODE, "wss://forger.example", emptyList(), before - 31L * 86_400))
         net.store.add(forger.sign(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen("fake", "old town", 0, listOf(forger.pub), "x")), listOf(listOf("g", "g-fake")), before))
         net.store.add(forger.sign(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(1, emptyMap(), listOf(Outcome.AwardDto(forger.pub, 9_000_000, "self-made")), emptyList(), "Ended")), listOf(listOf("g", "g-fake")), before))
 
@@ -411,6 +430,86 @@ class NodeTest {
         assertEquals(1, net.live().map { it.games.getValue(game) }.distinct().size, "the four agree on a seed without it")
     }
 
+    @Test fun theStoreRefusesEventsFromTheFutureAndOversizeOnes() = runTest {
+        val now = 2_000_000_000_000L
+        val store = EventStore { now }
+        val k = Keys.generate()
+        assertTrue(store.add(k.sign(Kinds.NOTE, "now", emptyList(), now / 1000)))
+        assertTrue(store.add(k.sign(Kinds.NOTE, "long ago", emptyList(), 1)), "the past is open: peers replay history")
+        assertFalse(store.add(k.sign(Kinds.NOTE, "tomorrow", emptyList(), now / 1000 + 86_400)))
+        assertFalse(store.add(k.sign(Kinds.NOTE, "x".repeat(EventStore.MAX_CONTENT + 1), emptyList(), now / 1000)))
+    }
+
+    @Test fun forgedHandoversAreIgnoredAndNeverCrashANode() = runTest {
+        val net = Network(6)
+        net.send(action(Keys.generate(), Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).first().tag("g")!!
+        val panel = net.referees.firstNotNullOf { it.panelOf(game) }
+        val victim = net.keys.indexOfFirst { it.pub !in panel }
+        val (a, b) = Keys.generate() to Keys.generate()
+        val fake = action(a, Action.Open("Nowhere"), city = "nowhere", at = net.now / 1000)
+        fun handover(seed: String, g: String, open: Event) = Handover(open, "nowhere", listOf(a.pub, b.pub, net.keys[victim].pub), mapOf(a.pub to listOf(1L, Long.MAX_VALUE)), seed, emptyList())
+        for ((g, open, seed) in listOf(Triple("g-fake", fake, "00".repeat(32)), Triple("g-fake2", fake, "zz"), Triple(game, net.store.query(listOf(Filter(kinds = setOf(Kinds.ACTION)))).first(), "01"))) {
+            for (k in listOf(a, b)) net.send(k.sign(Kinds.HANDOVER, Nip44.seal(Nostr.json.encodeToString(Handover.serializer(), handover(seed, g, open)), k, net.keys[victim].pub), listOf(listOf("g", g), listOf("p", net.keys[victim].pub))))
+        }
+        net.flush()
+        assertTrue(net.referees[victim].games.isEmpty(), "strangers can't enrol a node in a round")
+        assertNull(net.referees[victim].panelOf(game), "nor hand it a real one")
+    }
+
+    @Test fun aSelfieMustComeFromANodesMediaStore() = runTest {
+        val net = Network(1)
+        net.send(action(Keys.generate(), Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.referees[0].games.keys.single()
+        val panel = net.referees[0].panelOf(game)!!
+        val (snoop, fair) = Keys.generate() to Keys.generate()
+        net.send(action(snoop, Action.Join("Snoop", "https://snoop.example/pixel.png"), game, panel = panel))
+        net.send(action(fair, Action.Join("Fair", PIC), game, panel = panel))
+        net.flush()
+        val signups = net.referees[0].games.getValue(game).signups.map { it.id }
+        assertFalse(snoop.pub in signups, "an address of the player's choosing would collect every viewer's IP")
+        assertTrue(fair.pub in signups)
+    }
+
+    @Test fun theArchiveNeverWritesOutsideItsFolder() {
+        val root = createTempDirectory("archive").toFile()
+        val archive = Archive(File(root, "repo").apply { mkdirs() }, Archive.Sync.EXTERNAL)
+        val k = Keys.generate()
+        archive.record(k.sign(Kinds.NOTE, "x", listOf(listOf("g", "../escaped"))))
+        archive.record(k.sign(Kinds.NOTE, "y", listOf(listOf("g", "nodir/x"))))
+        archive.record(k.sign(Kinds.NOTE, "z", listOf(listOf("g", "g-ok"))))
+        assertFalse(File(root, "repo/escaped.jsonl").exists())
+        assertTrue(File(root, "repo/events").listFiles()!!.all { it.parentFile.name == "events" && !it.name.contains("/") })
+        assertEquals(3, archive.replay().size)
+    }
+
+    @Test fun refereesWithTheirOwnStoresHearingThingsInTheirOwnOrderAgree() = runTest {
+        val net = Network(5, separate = true)
+        val l = live(net)
+        // A flag run's opening moves, and a minute of play.
+        val runner = l.g().players.values.first { !it.isLeader }
+        val start = l.ground(runner.team.opponent).first()
+        net.now += 1_000; l.at(l.keyOf.getValue(runner.id), start)
+        net.now += GameRules.MINUTE; net.flush()
+        val views = net.referees.map { it.games.getValue(l.game) }
+        assertEquals(1, views.distinct().size, "five stores, five orders, one game")
+        val outcomes = net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME), tags = mapOf("g" to setOf(l.game)))))
+            .groupBy { Nostr.json.decodeFromString(Outcome.serializer(), it.content).seq }
+        assertTrue(outcomes.values.all { it.map { e -> e.content }.distinct().size == 1 }, "every batch, every referee, the same outcome")
+    }
+
+    @Test fun aRefereeWhoseSurveyDiffersPlaysOnTheQuorumsBoard() = runTest {
+        // Open data shifts: one referee's survey came back a cell short.
+        val short = object : com.hereliesaz.capturetheflag.data.CityDirectory {
+            override suspend fun resolve(cityName: String) = DemoCityDirectory.resolve(cityName)?.let { (c, cells) -> c to cells.dropLast(1) }
+        }
+        val net = Network(5, separate = true, cities = { if (it == 4) short else DemoCityDirectory })
+        val l = live(net)
+        assertEquals(1, net.referees.map { it.games.getValue(l.game) }.distinct().size, "the odd one out plays the quorum's board")
+        assertEquals(DemoCityDirectory.resolve("New Orleans")!!.second.size, net.store.query(listOf(Filter(kinds = setOf(Kinds.CITY_SURVEY))))
+            .map { Nostr.json.decodeFromString(Survey.serializer(), it.content) }.first { s -> net.referees[4].games.getValue(l.game).city == s.city }.cells.size)
+    }
+
     @Test fun aRefereeWhoSignsTwoBatchesIsCaught() = runTest {
         val net = Network(5)
         val p = Keys.generate()
@@ -436,7 +535,7 @@ class NodeTest {
         val panel = net.referees[0].panelOf(game)!!
         suspend fun act(k: Keys, a: Action) { net.send(action(k, a, game, panel = panel, at = net.now / 1000)); net.flush() }
         fun g() = net.referees[0].games.getValue(game)
-        players.forEachIndexed { i, p -> act(p, Action.Join("P$i", "s$i")) }
+        players.forEachIndexed { i, p -> act(p, Action.Join("P$i", PIC)) }
         net.now += GameRules.SIGNUP_WINDOW; net.flush()
         assertIs<GamePhase.FlagPlacement>(g().phase)
 
@@ -532,13 +631,13 @@ class NodeTest {
         scope.launch { store.live.collect { referee.accept(it) } }
         scope.launch { while (true) { kotlinx.coroutines.delay(50); referee.flush() } }
         val http = createClient { install(ClientWebSockets) }
-        fun phone() = NodeBackend(Keys.generate(), RelayClient("/", http, scope).also { it.start() }, scope, clock = { now }, answerWithinMs = 10_000)
+        fun phone() = NodeBackend(Keys.generate(), RelayClient("/", http, scope).also { it.start() }, scope, clock = { now }, answerWithinMs = 10_000, roster = { setOf(node.pub) })
         suspend fun eventually(what: String, check: () -> Boolean) {
             kotlinx.coroutines.withTimeoutOrNull(10_000) { while (!check()) kotlinx.coroutines.delay(50) } ?: error("never: $what")
         }
         try {
             val (ana, bo) = phone() to phone()
-            ana.register("Ana", "selfie-a"); bo.register("Bo", "selfie-b")
+            ana.register("Ana", PIC); bo.register("Bo", PIC)
             assertIs<GamePhase.Signup>(ana.requestCity("New Orleans").phase, "the referee opens a round on request")
             bo.requestCity("New Orleans")
             assertEquals(Verdict.Valid, ana.join("New Orleans"), "the verdict comes back from the referee")
@@ -559,10 +658,20 @@ class NodeTest {
             // Referees' awards and radio reach the phone too.
             eventually("radio") { ana.commentary("New Orleans").value.isNotEmpty() }
 
+            // A stranger announces a round in this city, naming themselves its panel: the phone doesn't believe it.
+            val stranger = Keys.generate()
+            store.add(stranger.sign(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen("x", seen.city.id, 0, listOf(stranger.pub), "c")), listOf(listOf("g", "g-stranger"), listOf("c", seen.city.id))))
+            // Nor their views, pings or results.
+            store.add(stranger.sign(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(7_777, mapOf("forged" to "ok"), listOf(Outcome.AwardDto(ana.me.value!!.id, 1_000_000, "forged")), emptyList(), "Active")), listOf(listOf("g", seen.id))))
+
             // Team chat goes through the referees, who hand it to each teammate: here, Ana herself.
             val room = com.hereliesaz.capturetheflag.chat.Channel.TeamRoom(seen.id, seen.players.getValue(ana.me.value!!.id).team)
             assertEquals(Verdict.Valid, ana.send(room, "Flag's under the oak"))
             eventually("team chat comes back through the panel") { ana.messages(room).value.any { it.body == "Flag's under the oak" } }
+            val sealedTo = store.query(listOf(Filter(kinds = setOf(Kinds.CHAT), authors = setOf(ana.me.value!!.id)))).last()
+            assertNotNull(Sealed.open(sealedTo.content, node, sealedTo.pubkey), "still sealed to the real panel")
+            assertNull(Sealed.open(sealedTo.content, stranger, sealedTo.pubkey), "not to the stranger")
+            assertTrue(ana.ledger.value.none { it.reason == "forged" }, "a stranger's outcome counts for nothing")
             // Straight from a player, around the referees: ignored.
             val sneak = Keys.generate()
             val inner = sneak.sign(Kinds.TEAM_CHAT, "{\"channel\":\"${room.key}\",\"text\":\"psst\"}")
@@ -584,9 +693,13 @@ class NodeTest {
                 }
             } ?: error("the phone never sealed to the new panel")
 
-            // Highlights ride the referees' outcomes.
+            // Highlights ride the referees' outcomes: one signature isn't enough on a panel of two now; both are.
             val moment = com.hereliesaz.capturetheflag.model.Highlight(com.hereliesaz.capturetheflag.model.HighlightKind.NEAR_MISS, ana.me.value!!.id, null, seen.id, seen.city.id, now)
-            store.add(node.sign(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(99_999, emptyMap(), emptyList(), emptyList(), "Active", listOf(moment))), listOf(listOf("g", seen.id))))
+            val result = Nostr.json.encodeToString(Outcome.serializer(), Outcome(99_999, emptyMap(), emptyList(), emptyList(), "Active", listOf(moment)))
+            store.add(node.sign(Kinds.OUTCOME, result, listOf(listOf("g", seen.id))))
+            kotlinx.coroutines.delay(300)
+            assertFalse(moment in ana.highlights.value, "half the panel isn't a quorum")
+            store.add(newcomer.sign(Kinds.OUTCOME, result, listOf(listOf("g", seen.id))))
             eventually("highlights reach the phone") { moment in ana.highlights.value }
         } finally {
             scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()

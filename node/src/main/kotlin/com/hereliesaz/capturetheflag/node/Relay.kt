@@ -1,7 +1,9 @@
 package com.hereliesaz.capturetheflag.node
 
 import com.hereliesaz.capturetheflag.net.*
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.get
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
@@ -23,7 +25,7 @@ import java.io.File
  * Every event the node has accepted, in arrival order, persisted as one JSON event per line.
  * Duplicates by id are ignored. [live] carries each new event to subscribers and to the referee.
  */
-class EventStore(private val file: File? = null) {
+class EventStore(private val file: File? = null, private val clock: () -> Long = System::currentTimeMillis) {
     private val events = mutableListOf<Event>()
     private val ids = mutableSetOf<String>()
     private val lock = Mutex()
@@ -37,8 +39,13 @@ class EventStore(private val file: File? = null) {
         }
     }
 
-    /** Stores a valid, new event. Returns false for invalid or already-seen events. */
+    /**
+     * Stores a valid, new event. Returns false for invalid, already-seen or unacceptable events:
+     * dated more than [MAX_FUTURE_S] ahead of this node's clock, or larger than [MAX_CONTENT].
+     * The past is open (peers and the archive replay history), so a date is never evidence of age.
+     */
     suspend fun add(e: Event): Boolean = lock.withLock {
+        if (e.created_at > clock() / 1000 + MAX_FUTURE_S || e.content.length > MAX_CONTENT) return false
         if (!e.valid() || !ids.add(e.id)) return false
         events += e
         file?.appendText(Nostr.json.encodeToString(Event.serializer(), e) + "\n")
@@ -54,12 +61,28 @@ class EventStore(private val file: File? = null) {
     }
 
     suspend fun size() = lock.withLock { events.size }
+
+    companion object {
+        const val MAX_FUTURE_S = 15 * 60L
+        /** Room for a handover's plaintext of a long round; far more than any player event needs. */
+        const val MAX_CONTENT = 4 * 1024 * 1024
+    }
 }
 
 /**
  * NIP-01 over WebSocket: `EVENT` in, `OK` back; `REQ` returns stored matches, then `EOSE`, then
  * keeps streaming new matches until `CLOSE`.
  */
+/**
+ * The referee roster this node trusts, at `GET /roster`: what a phone pointed at this node trusts
+ * too. Served over the same TLS as the relay, so it comes from who the phone asked.
+ */
+fun Route.roster(keys: List<String>) {
+    get("/roster") {
+        call.respondText(buildJsonArray { keys.forEach { add(JsonPrimitive(it)) } }.toString(), io.ktor.http.ContentType.Application.Json)
+    }
+}
+
 fun Route.relay(store: EventStore) {
     webSocket("/") {
         val subs = mutableMapOf<String, List<Filter>>()

@@ -30,13 +30,26 @@ import java.util.concurrent.TimeUnit
 class Archive(val root: File, private val sync: Sync) {
     enum class Sync { GIT, EXTERNAL }
 
+    private companion object {
+        val SAFE = Regex("[A-Za-z0-9-]{1,64}")
+    }
+
     private val events = File(root, "events").apply { mkdirs() }
     val cities = File(root, "cities").apply { mkdirs() }
     private val nodes = File(root, "nodes").apply { mkdirs() }
 
-    /** Appends a signed event to its game's log (or its kind's, for events outside a game). */
+    /**
+     * Appends a signed event to its game's log (or its kind's, for events outside a game). The game
+     * tag is the signer's to choose, so it only names a file once it's plainly a name: anything else
+     * goes under its hash, never a path.
+     */
     fun record(e: Event) {
-        val name = e.tag("g") ?: "kind-${e.kind}"
+        val tag = e.tag("g")
+        val name = when {
+            tag == null -> "kind-${e.kind}"
+            SAFE.matches(tag) -> tag
+            else -> "g-" + Nostr.sha256(tag.toByteArray()).toHex().take(32)
+        }
         File(events, "$name.jsonl").appendText(Nostr.json.encodeToString(Event.serializer(), e) + "\n")
     }
 

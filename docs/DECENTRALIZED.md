@@ -41,13 +41,11 @@ Nostr is a network of simple relays that store and forward signed JSON events ov
 ~~~
 kind   name              signed by   content
 31000  city.survey       node        onboarding result: boundary, grid, cells (public)
-31001  city.survey.ack   node        "I recomputed a sample and agree" (public)
 32000  game.open         referees    new round: city, deadlines, referee set, seed commitments
 32001  seed.reveal       referee     its seed share, after all commitments are in
 33000  action            player      join, co-captains, placeFlag, placeJail, tag, goLive, frame,
                                      endStream, dispute, appeal, decoy, vanish, interrogate, bounty
 33001  position          player      location fix, NIP-44 to each referee
-33002  evidence          player      photo hash + EXIF + pose + BLE sightings, NIP-44 to referees
 34000  batch             referee     canonical order: event ids with sequence numbers
 34001  outcome           referee     per-batch result: verdicts, awards, highlights, public notices
 34002  ping              referee     one ping, NIP-44 to its recipients only
@@ -72,7 +70,7 @@ Nodes opt in to referee. A node is eligible for a city if it has:
 
 ### How many, and how chosen
 
-Each game gets **5 referees; 3 must agree** (a quorum). They are drawn from the eligible pool by the previous round's final seed for that city. The first round in a city uses the survey's hash. Nobody picks their own referees.
+Each game gets **5 referees; 3 must agree** (a quorum). They are drawn from the eligible pool by the previous round's final seed for that city. The first round in a city uses the open request's id. Nobody picks their own referees.
 
 ### What they do
 
@@ -94,8 +92,8 @@ The engine needs randomness for the team deal, captains, ping recipients, blur o
 
 1. At `game.open`, each referee publishes `H(share)`.
 2. Once all 5 commitments are in, each publishes its `share`.
-3. `seed = H(share₁ ‖ … ‖ share₅)`.
-4. The engine's `Random` is seeded per batch with `H(seed ‖ batch sequence)`.
+3. `seed = H(share₁ ‖ … ‖ share₅)`, over the shares of the members batch 1 lists as sitting.
+4. The engine's `Random` is seeded per batch with `H(seed ‖ sequence ‖ batch time ‖ H(event ids))`.
 
 A referee that withholds its reveal is replaced (see Failure). Its share is dropped and the others' shares still decide. No single referee can steer the draw, because it must commit before seeing the others.
 
@@ -145,7 +143,7 @@ The app enforces this, but a modified app wouldn't, and NIP-17 messages are invi
 The first request for a city asks any node to survey it (`onboarding/`). The node publishes a `city.survey` with its result and a hash.
 
 - Other nodes spot-check it: they recompute 10 random cells, allowing 10% tolerance for data that has drifted. If those match, they publish `city.survey.ack`.
-- A survey with 3 acks is accepted. Its hash seeds the city's first referee draw.
+- The board a quorum of the panel names (by survey hash in `game.open`) is the one played.
 - The survey is permanent. Re-surveys need a new survey plus 3 acks, and apply only to rounds that open afterward.
 
 ## Points, levels, careers
@@ -181,9 +179,9 @@ GitHub and Google are single companies, which is why the archive is a mirror and
 | What goes wrong | What happens |
 |---|---|
 | A referee goes silent for 10 minutes | The other 4 continue (3 is still a quorum). A replacement is drawn by the current seed and receives the secrets from the remaining referees, re-encrypted to it. |
-| Two referees silent | Replacements drawn as above. Play pauses (no batches) until 3 are live. The clock pauses too: deadlines extend by the pause. |
+| Two referees silent | Replacements drawn as above. Play pauses (no batches) until 3 are live. The clock does not pause: deadlines stand. |
 | A referee signs two batches for the same sequence | Both signatures are public: proof. It loses eligibility. With 3 of 5, one double-signer and two honest referees who each saw a different batch could finalize both; 4 of 5 would close that, at the cost of stalling whenever two referees are down. |
-| Referees disagree on an outcome | The minority's outcome is ignored. Repeated disagreement costs eligibility. The disagreement is public, so anyone can replay and see who was wrong. |
+| Referees disagree on an outcome | The minority's outcome is ignored. Disagreement only slows a node's path to eligibility: it earns nothing from outcomes that didn't stand. The disagreement is public, so anyone can replay and see who was wrong. |
 | A player's phone is offline | Its actions queue locally and are submitted on reconnect. Evidence freshness (2 min) still applies, so late evidence fails, as it should. |
 | A relay censors a player | Players publish to several relays; referees read from several. |
 | Network partition | Whichever side holds a quorum of referees keeps playing; the other side's events wait. |
@@ -211,7 +209,7 @@ The first node (`node/`) proves the core loop, not the whole design. Built so fa
 
 1. **Relay.** A NIP-01 relay: WebSocket, `EVENT`/`REQ`/`CLOSE`, Schnorr signature checks, filters, persistence to disk.
 2. **Game kinds.** Accepts and indexes the kinds above.
-3. **Referee panels.** Every node lists the same roster of referee keys (`REFEREES`). An open request draws a panel of 5 from it by the request's id. The panel runs the commit-reveal seed ceremony, then orders batches by rotating leader and 3-of-5 signatures, replays them through `GameEngine`, and each signs an `outcome`. Double signers are caught. A roster of one is a panel of one.
+3. **Referee panels.** Every node lists the same roster of referee keys (`REFEREES`). An open request draws a panel of 5 from it by the request's id. The panel runs the commit-reveal seed ceremony, then orders batches by an advisory rotating leader (any member may propose; signatures decide) and 3-of-5 signatures, replays them through `GameEngine`, and each signs an `outcome`. Double signers are caught. A roster of one is a panel of one.
 4. **Surveyor.** Serves `city.survey` using the existing `onboarding/` pipeline.
 
 5. **Archive.** Mirrors to a git clone or a synced folder, bootstraps from it, and caches surveys there.
@@ -242,6 +240,11 @@ The first node (`node/`) proves the core loop, not the whole design. Built so fa
 
 21. **Seed withholding.** A member that hasn't committed within 5 minutes of the open, or hasn't revealed within 5 minutes of the last commitment, is voted out of the seed by the others (kind 34014); nobody votes against a member whose reveal it holds. Once a quorum votes, that member's share is left out and the rest decide the seed, as long as a quorum of shares remains. Until the first batch, a late quorum of votes can still change the seed; after it, the seed is fixed. The dropped member stays on the panel, silent, until it's replaced like any other.
 
-What the prototype cuts, and must not ship with: speech recognition is English-only and depends on the node having a model; only roster nodes are discovered, and a node must be given one peer to start; and media is only fetched when asked for, so footage on a node that's gone offline is lost to the others; eligibility, levels and the draw are read from each node's own copy of the history, so two nodes that haven't synced can draw different panels; the shared-IP rule isn't checked. A member that sees the others' reveals and then withholds its own can choose between two seeds (with its share, or without); commit-reveal can't close that, only make it cost the member its place. Events sealed to the old panel after a replacement but before the phones switch can't be opened by the newcomer, so it's outvoted on those. The matcher is coarse: shape and colour, not objects. Google's revocation list is online-only and isn't checked, and stream frames are signed by the player's key alone. Chat held for a cut-off reader lives in the referee's memory, so a restarted referee forgets it; the other referees still deliver. Every referee forwards every message, so readers get up to five copies and keep one.
+22. **Trust.** An outcome stands only once trusted signatures reach a quorum of `min(5, roster)`. Trusted is the roster plus earned keys: announced, 20 agreements on outcomes that stood, the first 30 days old by roster clocks. Self-declared dates and panels count for nothing. The relay refuses events dated over 15 minutes ahead and content over 4 MiB.
+23. **Phone trust.** Every node serves the roster at `GET /roster`. A phone accepts a `game.open` only when a quorum of the panel's roster members announce the same round, and anything else only from that panel; an outcome needs a quorum of distinct panel signers. Pings carry no recipient tag: phones trial-decrypt.
+24. **Consensus on inputs.** Batch 1 lists the sitting members, fixing the seed. A player's fix must fall between two minutes before its batch and the clock-skew allowance after. Batch signatures count only from serving members. Rounds never seeded expire after the signup window.
+25. **App identity.** Attestation must name `com.hereliesaz.capturetheflag`; with `ATTESTATION_SIGNERS` set, the signing digest must match too. Every certificate in the chain must be in date. The phone makes a fresh hardware key each UTC day.
+
+What the prototype cuts, and must not ship with: speech recognition is English-only and depends on the node having a model; only roster nodes are discovered, and a node must be given one peer to start; and media is only fetched when asked for, so footage on a node that's gone offline is lost to the others; the shared-IP rule isn't checked. A member that sees the others' reveals and then withholds its own can choose between two seeds (with its share, or without); commit-reveal can't close that, only make it cost the member its place. Events sealed to the old panel after a replacement but before the phones switch can't be opened by the newcomer, so it's outvoted on those. The matcher is coarse: shape and colour, not objects. Google's revocation list is online-only and isn't checked, and stream frames are signed by the player's key alone. Chat held for a cut-off reader lives in the referee's memory, so a restarted referee forgets it; the other referees still deliver. Every referee forwards every message, so readers get up to five copies and keep one.
 
 Next: nothing on this list.

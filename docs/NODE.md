@@ -45,6 +45,7 @@ A game needs five referees, so a real network needs at least five nodes, ideally
 | `VOSK_MODEL` | A [Vosk model](https://alphacephei.com/vosk/models) directory, so this node can hear the challenge words in stream audio. Mount it into the container (see the commented line in `compose.yaml`) and point this at the mount, e.g. `/models/vosk`. `vosk-model-small-en-us-0.15` is enough. |
 | `ARCHIVE` | A directory holding a clone of the network's private archive repository, or a synced Drive folder. Mount it in and point this at it. |
 | `ARCHIVE_SYNC` | `external` if something else (Drive for desktop, rclone) keeps `ARCHIVE` in sync; otherwise the node pulls and pushes it with git. |
+| `ATTESTATION_SIGNERS` | Hex SHA-256 digests of the app's signing certificates, comma-separated. Set it and only the genuine build's keys pass. |
 | `ATTESTATION` | `off` accepts evidence from emulators and rooted phones. For development only; never on a node that referees real games. |
 | `PORT`, `DATA_DIR` | Where the node listens and keeps its data inside the container. The defaults (`7447`, `/data`) suit the compose file. |
 

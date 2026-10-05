@@ -146,6 +146,11 @@ class PerksTest {
         val (center, r) = assertNotNull(GameEngine.flagSense(g, p.id))
         assertTrue(center.distanceTo(g.flags.getValue(p.team.opponent).location) <= r)
         assertEquals(center, GameEngine.flagSense(g, p.id)!!.first)
+        // Over a node the phone only has its view, which never carries the enemy flag: the circle travels in it.
+        val view = com.hereliesaz.capturetheflag.rules.GameView.of(g, p.id)
+        assertTrue(view.flags[p.team.opponent] == null)
+        assertEquals(center to r, GameEngine.flagSense(view, p.id))
+        assertTrue(com.hereliesaz.capturetheflag.rules.GameView.of(g, null).sense.isEmpty(), "nobody else's circle")
     }
 
     @Test fun deliberateExtendsOnlyThatTeamsWindow() {

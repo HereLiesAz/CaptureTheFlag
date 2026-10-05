@@ -273,6 +273,11 @@ data class Game(
     val flagZone: Map<PlayerId, Millis> = emptyMap(),
     /** Player → the tightest ring around the enemy flag they've crossed this approach (index into GameRules.FLAG_RINGS_M). */
     val flagRing: Map<PlayerId, Int> = emptyMap(),
+    /**
+     * Views only: the viewer's Flag Sense circle, worked out where the enemy flag is known (the
+     * referees) and handed over, since the view itself never carries the enemy flag.
+     */
+    val sense: Map<PlayerId, SenseCircle> = emptyMap(),
     /** Players who switched location off on enemy ground: their next fix at home jails them. */
     val dark: Set<PlayerId> = emptySet(),
     /** Teams that have used their one appeal this round. */
@@ -402,6 +407,10 @@ data class Highlight(
 ) {
     val secret: Boolean get() = kind in setOf(HighlightKind.DECOY, HighlightKind.VANISH, HighlightKind.INTERROGATION, HighlightKind.TRIPWIRE)
 }
+
+/** A circle guaranteed to contain the enemy flag (Flag Sense). */
+@Serializable
+data class SenseCircle(val center: GeoPoint, val radiusM: Double)
 
 /** One player's round, counted as it happens. */
 @Serializable

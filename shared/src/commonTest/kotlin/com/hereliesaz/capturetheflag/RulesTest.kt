@@ -308,6 +308,12 @@ class RulesTest {
         val onlooker = GameView.of(tr.game, null)
         assertTrue(onlooker.flags.isEmpty() && onlooker.lastFix.isEmpty() && onlooker.incursions.isEmpty())
         assertEquals(2, onlooker.jails.size)
+
+        // The winning still (where, and its photo's key) stays with the streamer, even after the run fails.
+        val still = tr.game.copy(streams = tr.game.streams.mapValues { (_, s) -> s.copy(finish = PhotoEvidence("https://n/media/x#k=secret", exifLocation = enemyFlag, exifTakenAt = t, deviceFix = null), void = "failed review") })
+        assertNotNull(GameView.of(still, p.id).streams.getValue("s1").finish)
+        assertNull(GameView.of(still, foe.id).streams.getValue("s1").finish)
+        assertNull(GameView.of(still, null).streams.getValue("s1").finish)
     }
 
     @Test fun onEnemyGroundOrInJailYouReCutOffFromYourTeam() {

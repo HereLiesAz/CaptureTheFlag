@@ -6,6 +6,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsBytes
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.isSuccess
 import java.security.SecureRandom
 import java.util.Base64
@@ -87,6 +88,13 @@ class MediaClient(private val relay: String, private val http: HttpClient) {
         val (blob, key) = Media.seal(bytes)
         return put(keys, blob)?.let { "$it#k=${key.toHex()}" }
     }
+
+    /** The referee roster the node publishes at `/roster`, or null when it can't be had. */
+    suspend fun roster(): Set<String>? = runCatching {
+        val r = http.get(base.removeSuffix("media/") + "roster")
+        if (!r.status.isSuccess()) return null
+        Nostr.json.parseToJsonElement(r.bodyAsText()).let { it as kotlinx.serialization.json.JsonArray }.map { (it as kotlinx.serialization.json.JsonPrimitive).content }.toSet()
+    }.getOrNull()
 
     /** Fetches and, for a private reference, decrypts. Checks the content against its hash. */
     suspend fun get(ref: String): ByteArray? {

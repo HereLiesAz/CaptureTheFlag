@@ -45,6 +45,7 @@ requested:
   - codeql-scan
   - android-dependency-update
   - android-github-release
+  - android-play-release
 
 # For a workflow that is not in the menu, describe the GENERAL capability needed.
 # Submit the implementation to HereLiesAz/workflows; do not implement it locally.
