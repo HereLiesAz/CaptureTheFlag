@@ -127,7 +127,11 @@ data class Evidence(
 
 /** Content of a kind-34000 batch: the canonical order of player events for one game. */
 @Serializable
-data class Batch(val seq: Long, val at: Long, val events: List<String>)
+data class Batch(
+    val seq: Long, val at: Long, val events: List<String>,
+    /** Batch 1 only: whose seed shares make the seed. Signing it fixes the seed for everyone. */
+    val sitting: List<String>? = null,
+)
 
 /** Content of a kind-34001 outcome: the public result of one batch. */
 @Serializable
@@ -195,7 +199,21 @@ object Sealed {
 
 /** Content of a kind-32000 game.open: one per panel referee, each carrying its seed commitment. */
 @Serializable
-data class GameOpen(val open: String, val city: String, val deadline: Long, val panel: List<String>, val commit: String)
+data class GameOpen(
+    val open: String, val city: String, val deadline: Long, val panel: List<String>, val commit: String,
+    /** SHA-256 of this referee's [Survey] of the city: the round is played on the one a quorum shares. */
+    val survey: String = "",
+)
+
+/**
+ * Content of a kind-31000 city survey, published for a round (tagged `g`): the board itself. Surveys
+ * come from live open data, so two referees can see different ones; a round uses the one a quorum
+ * of its panel named in their opens, from whoever published it, checked against that hash.
+ */
+@Serializable
+data class Survey(val city: com.hereliesaz.capturetheflag.model.City, val cells: List<com.hereliesaz.capturetheflag.rules.CityCell>) {
+    fun encode() = Nostr.json.encodeToString(serializer(), this)
+}
 
 /** Content of a kind-34010 match: how much [event]'s photo looks like the registered reference, 0 to 1. */
 @Serializable

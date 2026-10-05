@@ -176,22 +176,36 @@ class NodeTest {
         assertEquals(commit.commitment, revealed.commitment, "the reveal matches what was committed")
     }
 
-    /** Five referees on one network. Referees in [down] neither hear nor speak. */
-    private class Network(n: Int, var now: Long = 1_000_000L) {
+    /**
+     * Referees on one network. Referees in [down] neither hear nor speak. With [separate], each has
+     * its own store and hears the log in its own shuffled order, as real nodes would: what one has
+     * seen, another may not have yet.
+     */
+    private class Network(n: Int, var now: Long = 1_000_000L, separate: Boolean = false, cities: (Int) -> com.hereliesaz.capturetheflag.data.CityDirectory = { DemoCityDirectory }) {
         val store = EventStore()
         val keys = List(n) { Keys.generate() }
-        val referees = keys.map { Referee(it, store, DemoCityDirectory, keys.map(Keys::pub)) { now } }
+        val stores = if (separate) keys.map { EventStore() } else keys.map { store }
+        val referees = keys.mapIndexed { i, k -> Referee(k, stores[i], cities(i), keys.map(Keys::pub)) { now } }
         val down = mutableSetOf<Int>()
+        private val orders = keys.indices.map { kotlin.random.Random(it) }
 
         suspend fun send(e: Event) { store.add(e); pump() }
 
         /** Delivers the whole log to every live referee (they ignore repeats) until it stops growing. */
         suspend fun pump() {
             var size = -1
-            while (store.size() != size) {
+            while (true) {
+                // Everything any live node has published reaches the shared log...
+                stores.forEachIndexed { i, st -> if (i !in down && st !== store) st.query(listOf(Filter())).forEach { store.add(it) } }
+                if (store.size() == size) break
                 size = store.size()
                 val all = store.query(listOf(Filter())).sortedWith(compareBy({ it.created_at }, { it.id }))
-                all.forEach { e -> referees.forEachIndexed { i, r -> if (i !in down) r.accept(e) } }
+                // ...and each live node hears it, in its own order when separate.
+                referees.forEachIndexed { i, r ->
+                    if (i in down) return@forEachIndexed
+                    val mine = if (stores[i] === store) all else all.shuffled(orders[i])
+                    mine.forEach { e -> if (stores[i] !== store) stores[i].add(e); r.accept(e) }
+                }
             }
         }
 
@@ -466,6 +480,33 @@ class NodeTest {
         assertFalse(File(root, "repo/escaped.jsonl").exists())
         assertTrue(File(root, "repo/events").listFiles()!!.all { it.parentFile.name == "events" && !it.name.contains("/") })
         assertEquals(3, archive.replay().size)
+    }
+
+    @Test fun refereesWithTheirOwnStoresHearingThingsInTheirOwnOrderAgree() = runTest {
+        val net = Network(5, separate = true)
+        val l = live(net)
+        // A flag run's opening moves, and a minute of play.
+        val runner = l.g().players.values.first { !it.isLeader }
+        val start = l.ground(runner.team.opponent).first()
+        net.now += 1_000; l.at(l.keyOf.getValue(runner.id), start)
+        net.now += GameRules.MINUTE; net.flush()
+        val views = net.referees.map { it.games.getValue(l.game) }
+        assertEquals(1, views.distinct().size, "five stores, five orders, one game")
+        val outcomes = net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME), tags = mapOf("g" to setOf(l.game)))))
+            .groupBy { Nostr.json.decodeFromString(Outcome.serializer(), it.content).seq }
+        assertTrue(outcomes.values.all { it.map { e -> e.content }.distinct().size == 1 }, "every batch, every referee, the same outcome")
+    }
+
+    @Test fun aRefereeWhoseSurveyDiffersPlaysOnTheQuorumsBoard() = runTest {
+        // Open data shifts: one referee's survey came back a cell short.
+        val short = object : com.hereliesaz.capturetheflag.data.CityDirectory {
+            override suspend fun resolve(cityName: String) = DemoCityDirectory.resolve(cityName)?.let { (c, cells) -> c to cells.dropLast(1) }
+        }
+        val net = Network(5, separate = true, cities = { if (it == 4) short else DemoCityDirectory })
+        val l = live(net)
+        assertEquals(1, net.referees.map { it.games.getValue(l.game) }.distinct().size, "the odd one out plays the quorum's board")
+        assertEquals(DemoCityDirectory.resolve("New Orleans")!!.second.size, net.store.query(listOf(Filter(kinds = setOf(Kinds.CITY_SURVEY))))
+            .map { Nostr.json.decodeFromString(Survey.serializer(), it.content) }.first { s -> net.referees[4].games.getValue(l.game).city == s.city }.cells.size)
     }
 
     @Test fun aRefereeWhoSignsTwoBatchesIsCaught() = runTest {
