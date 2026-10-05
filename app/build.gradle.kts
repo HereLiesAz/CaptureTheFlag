@@ -39,6 +39,10 @@ android {
 
     buildTypes {
         release {
+            // R8: Play releases must ship a mapping.txt (the central publisher refuses one without).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (uploadKey != null) signingConfig = signingConfigs.getByName("upload")
         }
     }
