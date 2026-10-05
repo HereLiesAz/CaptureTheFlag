@@ -43,6 +43,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val PANEL_TURNS = 6
+/** A selfie as a node stores it: the only kind a referee lets into a round. */
+private const val PIC = "https://node.example/media/0000000000000000000000000000000000000000000000000000000000000000"
 
 class NodeTest {
     @Test fun eventsSignAndVerify() {
@@ -116,12 +118,12 @@ class NodeTest {
         assertTrue(opened.all { it.pubkey == node.pub })
 
         players.forEachIndexed { i, p ->
-            val e = action(p, Action.Join("P$i", "selfie$i"), game, panel = listOf(node.pub))
+            val e = action(p, Action.Join("P$i", PIC), game, panel = listOf(node.pub))
             store.add(e); referee.accept(e)
         }
         // An action with a bad signature never reaches the store, so never reaches a batch.
         // One sent in the clear is refused: in a game, only the referee reads what players send.
-        val clear = action(Keys.generate(), Action.Join("Loud", "selfie"), game)
+        val clear = action(Keys.generate(), Action.Join("Loud", PIC), game)
         store.add(clear); referee.accept(clear)
         referee.flush()
         assertEquals(4, referee.games.getValue(game).signups.size)
@@ -155,7 +157,7 @@ class NodeTest {
         action(players[0], Action.Open("New Orleans"), city = "new orleans", at = now / 1000).let { store.add(it); referee.accept(it) }
         val game = referee.games.keys.single()
         suspend fun send(e: Event) { store.add(e); referee.accept(e) }
-        players.forEachIndexed { i, p -> send(action(p, Action.Join("P$i", "s$i"), game, panel = listOf(node.pub))) }
+        players.forEachIndexed { i, p -> send(action(p, Action.Join("P$i", PIC), game, panel = listOf(node.pub))) }
         val k = ByteArray(32) { 7 }.toHex()
         send(players[0].sign(Kinds.BLE_KEY, Sealed.forPanel(k, players[0], listOf(node.pub)), listOf(listOf("g", game))))
         referee.flush()
@@ -208,7 +210,7 @@ class NodeTest {
         assertEquals(5, net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).size)
         assertEquals(5, net.store.query(listOf(Filter(kinds = setOf(Kinds.SEED_REVEAL)))).size)
 
-        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", "s$i"), game, panel = panel)) }
+        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", PIC), game, panel = panel)) }
         net.flush()
         net.referees.forEach { assertEquals(4, it.games.getValue(game).signups.size) }
         assertEquals(5, net.store.query(listOf(Filter(kinds = setOf(Kinds.OUTCOME)))).size, "every referee signs the outcome")
@@ -251,8 +253,8 @@ class NodeTest {
 
         // A referee can't play in its own game.
         val sneaky = net.keys.first { it.pub in panel }
-        net.send(action(sneaky, Action.Join("Ref", "s"), game, panel = panel)); net.flush()
-        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", "s$i"), game, panel = panel)) }
+        net.send(action(sneaky, Action.Join("Ref", PIC), game, panel = panel)); net.flush()
+        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", PIC), game, panel = panel)) }
         net.flush()
         net.now += GameRules.SIGNUP_WINDOW
         repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
@@ -299,7 +301,7 @@ class NodeTest {
 
         // And play goes on without it.
         val panel = net.referees[0].panelOf(game)!!
-        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", "s$i"), game, panel = panel)) }
+        players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", PIC), game, panel = panel)) }
         net.flush()
         net.live().forEach { assertEquals(4, it.games.getValue(game).signups.size) }
 
@@ -325,7 +327,7 @@ class NodeTest {
         net.send(action(players[0], Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
         val game = net.store.query(listOf(Filter(kinds = setOf(Kinds.GAME_OPEN)))).first { it.tag("c") == "new orleans" }.tag("g")!!
         val l = Live(net, players, game, net.referees.firstNotNullOf { it.panelOf(game) })
-        players.forEachIndexed { i, p -> l.act(p, Action.Join("P$i", "s$i")) }
+        players.forEachIndexed { i, p -> l.act(p, Action.Join("P$i", PIC)) }
         net.now += GameRules.SIGNUP_WINDOW; net.flush()
         for (team in Team.entries) {
             val cap = l.g().players.values.first { it.team == team && it.role == Role.CAPTAIN }
@@ -440,6 +442,20 @@ class NodeTest {
         assertNull(net.referees[victim].panelOf(game), "nor hand it a real one")
     }
 
+    @Test fun aSelfieMustComeFromANodesMediaStore() = runTest {
+        val net = Network(1)
+        net.send(action(Keys.generate(), Action.Open("New Orleans"), city = "new orleans", at = net.now / 1000))
+        val game = net.referees[0].games.keys.single()
+        val panel = net.referees[0].panelOf(game)!!
+        val (snoop, fair) = Keys.generate() to Keys.generate()
+        net.send(action(snoop, Action.Join("Snoop", "https://snoop.example/pixel.png"), game, panel = panel))
+        net.send(action(fair, Action.Join("Fair", PIC), game, panel = panel))
+        net.flush()
+        val signups = net.referees[0].games.getValue(game).signups.map { it.id }
+        assertFalse(snoop.pub in signups, "an address of the player's choosing would collect every viewer's IP")
+        assertTrue(fair.pub in signups)
+    }
+
     @Test fun theArchiveNeverWritesOutsideItsFolder() {
         val root = createTempDirectory("archive").toFile()
         val archive = Archive(File(root, "repo").apply { mkdirs() }, Archive.Sync.EXTERNAL)
@@ -477,7 +493,7 @@ class NodeTest {
         val panel = net.referees[0].panelOf(game)!!
         suspend fun act(k: Keys, a: Action) { net.send(action(k, a, game, panel = panel, at = net.now / 1000)); net.flush() }
         fun g() = net.referees[0].games.getValue(game)
-        players.forEachIndexed { i, p -> act(p, Action.Join("P$i", "s$i")) }
+        players.forEachIndexed { i, p -> act(p, Action.Join("P$i", PIC)) }
         net.now += GameRules.SIGNUP_WINDOW; net.flush()
         assertIs<GamePhase.FlagPlacement>(g().phase)
 
@@ -579,7 +595,7 @@ class NodeTest {
         }
         try {
             val (ana, bo) = phone() to phone()
-            ana.register("Ana", "selfie-a"); bo.register("Bo", "selfie-b")
+            ana.register("Ana", PIC); bo.register("Bo", PIC)
             assertIs<GamePhase.Signup>(ana.requestCity("New Orleans").phase, "the referee opens a round on request")
             bo.requestCity("New Orleans")
             assertEquals(Verdict.Valid, ana.join("New Orleans"), "the verdict comes back from the referee")

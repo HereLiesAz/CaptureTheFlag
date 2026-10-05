@@ -706,7 +706,12 @@ class Referee(
                 unattested(a, who)?.let { return Transition(g, Verdict.Rejected(it)) }
             }) {
                 is Action.Open -> null
-                is Action.Join -> if (who in r.terms) Transition(g, Verdict.Rejected("Referees can't play in games they referee")) else engine.join(g, User(who, a.name, a.selfie))
+                is Action.Join -> when {
+                    who in r.terms -> Transition(g, Verdict.Rejected("Referees can't play in games they referee"))
+                    // Every phone in the round fetches it: only a node's media store, never an address of the player's choosing.
+                    !SELFIE.matches(a.selfie) -> Transition(g, Verdict.Rejected("Selfie must be uploaded to a node first"))
+                    else -> engine.join(g, User(who, a.name, a.selfie))
+                }
                 is Action.CoCaptains -> engine.appointCoCaptains(g, who, a.picks)
                 is Action.PlaceFlag -> engine.placeFlag(g, who, a.venue, a.kind, a.address, GeoPoint(a.lat, a.lng), a.photo.toModel(), now).also {
                     if (it.verdict !is Verdict.Rejected) {
@@ -813,6 +818,7 @@ class Referee(
         const val TICK_MS = 60_000L
         const val MATCH_WAIT_MS = 30_000L
         const val SILENT_MS = 10 * 60_000L
+        val SELFIE = Regex("https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/media/[0-9a-f]{64}")
         const val SEED_WAIT_MS = 5 * 60_000L
         const val KEY_AGE_DAYS = 30L
         const val AGREEMENTS = 20

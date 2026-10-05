@@ -11,6 +11,7 @@ import com.hereliesaz.capturetheflag.onboarding.CityOnboarding
 import com.hereliesaz.capturetheflag.onboarding.OpenData
 import androidx.lifecycle.lifecycleScope
 import com.hereliesaz.capturetheflag.data.GameBackend
+import com.hereliesaz.capturetheflag.net.Media
 import com.hereliesaz.capturetheflag.net.MediaClient
 import com.hereliesaz.capturetheflag.net.NodeBackend
 import com.hereliesaz.capturetheflag.net.RelayClient
@@ -25,8 +26,8 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val platform = AndroidPlatformServices(this)
         val identity = Identity(this)
+        val platform = AndroidPlatformServices(this, identity.node?.let(Media::base))
         // On a node: the real, networked game. Without one: the built-in single-phone test server,
         // which gathers city data itself from open data (OpenStreetMap, WorldPop).
         val backend: GameBackend = identity.node?.let { url ->

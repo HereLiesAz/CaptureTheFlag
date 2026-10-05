@@ -41,7 +41,10 @@ object GameView {
             pingedAbout = mine(game.pingedAbout),
             streams = game.streams.mapValues { (_, s) ->
                 val defender = me != null && game.players[s.by]?.team == me.team.opponent
-                if (s.purpose == StreamPurpose.CAPTURE && !defender) s.copy(target = s.lastFrame.point) else s
+                // The winning still is evidence: its location and its photo's key stay with the
+                // streamer (and the referees), or a void capture would hand everyone the flag.
+                val kept = if (s.by == me?.id) s else s.copy(finish = null)
+                if (s.purpose == StreamPurpose.CAPTURE && !defender) kept.copy(target = s.lastFrame.point) else kept
             },
             flagZone = mine(game.flagZone),
             flagRing = mine(game.flagRing),

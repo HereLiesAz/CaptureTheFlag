@@ -38,7 +38,11 @@ import java.io.File
  * Android implementation. Must be constructed in [ComponentActivity.onCreate] (before STARTED)
  * so activity-result launchers register in time.
  */
-class AndroidPlatformServices(private val activity: ComponentActivity) : PlatformServices {
+class AndroidPlatformServices(
+    private val activity: ComponentActivity,
+    /** The node's media store (`https://…/media/`): the only place other players' selfies load from. */
+    private val media: String? = null,
+) : PlatformServices {
     private val proximity = Proximity(activity)
     private val fused = LocationServices.getFusedLocationProviderClient(activity)
     private var pending: CompletableDeferred<CameraActivity.Shot>? = null
@@ -145,7 +149,12 @@ class AndroidPlatformServices(private val activity: ComponentActivity) : Platfor
             value = uri?.let { u ->
                 withContext(Dispatchers.IO) {
                     runCatching {
-                        val stream = if (u.startsWith("http")) java.net.URL(u).openStream() else activity.contentResolver.openInputStream(Uri.parse(u))
+                        // Never an address a player chose: that would tell them every viewer's IP.
+                        val stream = when {
+                            media != null && u.startsWith(media) && !u.contains('#') -> java.net.URL(u).openStream()
+                            Uri.parse(u).authority == "${activity.packageName}.photos" -> activity.contentResolver.openInputStream(Uri.parse(u))
+                            else -> null
+                        }
                         stream?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = 4 }) }
                     }.getOrNull()
                 }
