@@ -316,7 +316,8 @@ class NodeTest {
         // And play goes on without it.
         val panel = net.referees[0].panelOf(game)!!
         players.forEachIndexed { i, p -> net.send(action(p, Action.Join("P$i", PIC), game, panel = panel)) }
-        net.flush()
+        // The absent one may be next to lead: its turn passes to the next referee.
+        repeat(PANEL_TURNS) { net.flush(); net.now += Referee.LEADER_TURN_MS }
         net.live().forEach { assertEquals(4, it.games.getValue(game).signups.size) }
 
         // It comes back late with its commitment and reveal: too late, the seed stands.
