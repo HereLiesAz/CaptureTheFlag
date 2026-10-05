@@ -33,6 +33,7 @@ class MainActivity : ComponentActivity() {
             NodeBackend(
                 identity.keys, RelayClient.open(url, lifecycleScope), lifecycleScope,
                 media = MediaClient.open(url), read = platform::readMedia,
+                roster = MediaClient.open(url).let { m -> { m.roster() } },
                 attest = HardwareKey(identity.keys).let { k -> { bytes -> withContext(Dispatchers.IO) { k.sign(bytes) } } },
             ).also { node ->
                 identity.profile?.let { (name, selfie) -> lifecycleScope.launch { node.register(name, selfie) } }

@@ -1,7 +1,9 @@
 package com.hereliesaz.capturetheflag.node
 
 import com.hereliesaz.capturetheflag.net.*
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.get
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
@@ -71,6 +73,16 @@ class EventStore(private val file: File? = null, private val clock: () -> Long =
  * NIP-01 over WebSocket: `EVENT` in, `OK` back; `REQ` returns stored matches, then `EOSE`, then
  * keeps streaming new matches until `CLOSE`.
  */
+/**
+ * The referee roster this node trusts, at `GET /roster`: what a phone pointed at this node trusts
+ * too. Served over the same TLS as the relay, so it comes from who the phone asked.
+ */
+fun Route.roster(keys: List<String>) {
+    get("/roster") {
+        call.respondText(buildJsonArray { keys.forEach { add(JsonPrimitive(it)) } }.toString(), io.ktor.http.ContentType.Application.Json)
+    }
+}
+
 fun Route.relay(store: EventStore) {
     webSocket("/") {
         val subs = mutableMapOf<String, List<Filter>>()

@@ -78,7 +78,7 @@ fun main() = runBlocking {
 
     embeddedServer(Netty, port = port) {
         install(WebSockets)
-        routing { relay(store); media(media) }
+        routing { relay(store); media(media); roster(roster) }
     }.start(wait = true)
     Unit
 }

@@ -667,8 +667,8 @@ class Referee(
         )), r.id)
         if (!deliver) { r.uncommitted.clear(); return }
         for (p in total.pings) {
-            // One event per recipient: nobody else can read it, and nobody else is named on it.
-            for (to in p.recipients) publish(Kinds.PING, Nip44.seal(Pings.encode(pingFor(r, p, to, total.game)), keys, to), r.id, listOf(listOf("p", to)))
+            // One event per recipient, naming nobody: who was pinged is itself a secret. Phones try each.
+            for (to in p.recipients) publish(Kinds.PING, Nip44.seal(Pings.encode(pingFor(r, p, to, total.game)), keys, to), r.id)
         }
         for (s in r.uncommitted) publish(Kinds.COMMIT, Nostr.json.encodeToString(Commit.serializer(), Commit(s.what, s.who, s.team, s.commitment)), r.id)
         r.uncommitted.clear()

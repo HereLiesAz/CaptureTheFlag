@@ -573,7 +573,7 @@ class NodeTest {
         scope.launch { store.live.collect { referee.accept(it) } }
         scope.launch { while (true) { kotlinx.coroutines.delay(50); referee.flush() } }
         val http = createClient { install(ClientWebSockets) }
-        fun phone() = NodeBackend(Keys.generate(), RelayClient("/", http, scope).also { it.start() }, scope, clock = { now }, answerWithinMs = 10_000)
+        fun phone() = NodeBackend(Keys.generate(), RelayClient("/", http, scope).also { it.start() }, scope, clock = { now }, answerWithinMs = 10_000, roster = { setOf(node.pub) })
         suspend fun eventually(what: String, check: () -> Boolean) {
             kotlinx.coroutines.withTimeoutOrNull(10_000) { while (!check()) kotlinx.coroutines.delay(50) } ?: error("never: $what")
         }
@@ -600,10 +600,20 @@ class NodeTest {
             // Referees' awards and radio reach the phone too.
             eventually("radio") { ana.commentary("New Orleans").value.isNotEmpty() }
 
+            // A stranger announces a round in this city, naming themselves its panel: the phone doesn't believe it.
+            val stranger = Keys.generate()
+            store.add(stranger.sign(Kinds.GAME_OPEN, Nostr.json.encodeToString(GameOpen.serializer(), GameOpen("x", seen.city.id, 0, listOf(stranger.pub), "c")), listOf(listOf("g", "g-stranger"), listOf("c", seen.city.id))))
+            // Nor their views, pings or results.
+            store.add(stranger.sign(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(7_777, mapOf("forged" to "ok"), listOf(Outcome.AwardDto(ana.me.value!!.id, 1_000_000, "forged")), emptyList(), "Active")), listOf(listOf("g", seen.id))))
+
             // Team chat goes through the referees, who hand it to each teammate: here, Ana herself.
             val room = com.hereliesaz.capturetheflag.chat.Channel.TeamRoom(seen.id, seen.players.getValue(ana.me.value!!.id).team)
             assertEquals(Verdict.Valid, ana.send(room, "Flag's under the oak"))
             eventually("team chat comes back through the panel") { ana.messages(room).value.any { it.body == "Flag's under the oak" } }
+            val sealedTo = store.query(listOf(Filter(kinds = setOf(Kinds.CHAT), authors = setOf(ana.me.value!!.id)))).last()
+            assertNotNull(Sealed.open(sealedTo.content, node, sealedTo.pubkey), "still sealed to the real panel")
+            assertNull(Sealed.open(sealedTo.content, stranger, sealedTo.pubkey), "not to the stranger")
+            assertTrue(ana.ledger.value.none { it.reason == "forged" }, "a stranger's outcome counts for nothing")
             // Straight from a player, around the referees: ignored.
             val sneak = Keys.generate()
             val inner = sneak.sign(Kinds.TEAM_CHAT, "{\"channel\":\"${room.key}\",\"text\":\"psst\"}")
@@ -625,9 +635,13 @@ class NodeTest {
                 }
             } ?: error("the phone never sealed to the new panel")
 
-            // Highlights ride the referees' outcomes.
+            // Highlights ride the referees' outcomes: one signature isn't enough on a panel of two now; both are.
             val moment = com.hereliesaz.capturetheflag.model.Highlight(com.hereliesaz.capturetheflag.model.HighlightKind.NEAR_MISS, ana.me.value!!.id, null, seen.id, seen.city.id, now)
-            store.add(node.sign(Kinds.OUTCOME, Nostr.json.encodeToString(Outcome.serializer(), Outcome(99_999, emptyMap(), emptyList(), emptyList(), "Active", listOf(moment))), listOf(listOf("g", seen.id))))
+            val result = Nostr.json.encodeToString(Outcome.serializer(), Outcome(99_999, emptyMap(), emptyList(), emptyList(), "Active", listOf(moment)))
+            store.add(node.sign(Kinds.OUTCOME, result, listOf(listOf("g", seen.id))))
+            kotlinx.coroutines.delay(300)
+            assertFalse(moment in ana.highlights.value, "half the panel isn't a quorum")
+            store.add(newcomer.sign(Kinds.OUTCOME, result, listOf(listOf("g", seen.id))))
             eventually("highlights reach the phone") { moment in ana.highlights.value }
         } finally {
             scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()

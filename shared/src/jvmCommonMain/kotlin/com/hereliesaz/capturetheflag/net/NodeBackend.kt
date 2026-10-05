@@ -55,6 +55,11 @@ class NodeBackend(
     private val media: MediaClient? = null,
     /** Reads a photo this phone took, by the reference the platform gave it. */
     private val read: suspend (String) -> ByteArray? = { null },
+    /**
+     * The referee roster this phone trusts: from the node it was pointed at (over TLS, so the node
+     * is who it says). Null until known; nothing a referee says is believed before then.
+     */
+    private val roster: suspend () -> Set<String>? = { null },
     /** Signs evidence with the phone's attested hardware key; null where there's none (tests, the JVM). */
     private val attest: (suspend (ByteArray) -> Evidence.Attestation?)? = null,
 ) : GameBackend {
@@ -80,11 +85,14 @@ class NodeBackend(
     private val bleKeys = ConcurrentHashMap<String, ByteArray>()
     private val seen = ConcurrentHashMap.newKeySet<String>()
     private val panelVotes = ConcurrentHashMap<String, MutableSet<String>>()
+    private val openVotes = ConcurrentHashMap<String, MutableSet<String>>()
+    private val outcomeVotes = ConcurrentHashMap<String, MutableSet<String>>()
+    @Volatile private var knownRoster: Set<String>? = null
     private val laps = ConcurrentHashMap<String, MutableStateFlow<List<String>>>()
 
     init {
         scope.launch { relay.events.collect { if (seen.add(it.id)) runCatching { receive(it) } } }
-        scope.launch { relay.subscribe("mine", listOf(Filter(kinds = setOf(Kinds.VIEW, Kinds.PING, Kinds.TEAM_CHAT), tags = mapOf("p" to setOf(keys.pub))))) }
+        scope.launch { relay.subscribe("mine", listOf(Filter(kinds = setOf(Kinds.VIEW, Kinds.TEAM_CHAT), tags = mapOf("p" to setOf(keys.pub))))) }
     }
 
     private fun key(city: String) = city.trim().lowercase()
@@ -94,63 +102,77 @@ class NodeBackend(
     private suspend fun receive(e: Event) {
         when (e.kind) {
             Kinds.GAME_OPEN -> {
+                // Anyone can announce a round naming themselves its panel. Believe one only when a
+                // quorum of its panel, every one of them on the trusted roster, announced the same round.
                 val o = Nostr.json.decodeFromString(GameOpen.serializer(), e.content)
                 val id = e.tag("g") ?: return
-                rounds.putIfAbsent(id, Round(id, o.panel))
+                if (rounds.containsKey(id)) return
+                val trusted = (knownRoster ?: roster()?.also { knownRoster = it }) ?: return
+                if (e.pubkey !in o.panel || e.pubkey !in trusted) return
+                val votes = openVotes.getOrPut("$id|${o.open}|${o.city}|${o.panel}") { ConcurrentHashMap.newKeySet() }.apply { add(e.pubkey) }
+                if (votes.size < o.panel.size / 2 + 1 || rounds.putIfAbsent(id, Round(id, o.panel)) != null) return
                 current[o.city] = id
-                relay.subscribe("game:$id", listOf(Filter(kinds = setOf(Kinds.OUTCOME, Kinds.PANEL), tags = mapOf("g" to setOf(id)))))
-            }
-            Kinds.PUBLIC_VIEW -> {
-                val city = e.tag("c") ?: return
-                val g = Views.decode(e.content)
-                // Once we're in the game, our sealed view says more; until then, the public one will do.
-                if (_me.value?.id?.let { it in g.players || g.signups.any { u -> u.id == it } } != true) show(city, g, e)
-            }
-            Kinds.VIEW -> {
-                val g = Views.decode(Nip44.open(e.content, keys, e.pubkey))
-                show(current.entries.firstOrNull { it.value == g.id }?.key ?: key(g.city.name), g, e)
-            }
-            Kinds.OUTCOME -> {
-                val o = Nostr.json.decodeFromString(Outcome.serializer(), e.content)
-                val game = e.tag("g") ?: return
-                o.verdicts.forEach { (id, v) -> if (verdicts.putIfAbsent(id, v) == null) answered.emit(id) }
-                // Every referee signs the same outcome; count it once.
-                val city = games.entries.firstOrNull { it.value.value?.id == game }?.key ?: ""
-                if (outcomes.putIfAbsent("$game|${o.seq}", o.awards.map { Award(it.user, city, game, it.points, it.reason, e.created_at * 1000) }) == null) {
-                    _ledger.value = outcomes.values.flatten().sortedBy { it.at }
-                    if (o.highlights.isNotEmpty()) _highlights.update { (it + o.highlights).distinct().sortedBy { h -> h.at } }
-                }
-            }
-            Kinds.PANEL -> {
-                // A silent referee was replaced: seal to the new panel once a majority of the one we knew says so.
-                val id = e.tag("g") ?: return
-                val round = rounds[id] ?: return
-                if (e.pubkey !in round.panel) return
-                val votes = panelVotes.getOrPut("$id|${e.content}") { ConcurrentHashMap.newKeySet() }.apply { add(e.pubkey) }
-                if (votes.size >= round.panel.size / 2 + 1) {
-                    rounds[id] = Round(id, Nostr.json.decodeFromString(PanelChange.serializer(), e.content).panel)
-                }
-            }
-            Kinds.PING -> pingBus.emit(Pings.decode(Nip44.open(e.content, keys, e.pubkey)))
-            Kinds.RADIO -> {
-                val city = e.tag("c") ?: return
-                feed(city).update { (it + Commentary(e.created_at * 1000, e.content)).sortedBy { c -> c.at }.takeLast(FEED_LENGTH) }
+                relay.subscribe("game:$id", listOf(Filter(kinds = setOf(Kinds.OUTCOME, Kinds.PANEL, Kinds.PING), tags = mapOf("g" to setOf(id)))))
             }
             Kinds.NOTE -> e.tag("c")?.let { city -> post(Channel.City(city).key, e.pubkey, e.content, e.created_at) }
-            Kinds.TEAM_CHAT -> {
-                // From a referee on one of our panels only: anyone else would be going around the cut-off.
-                if (rounds.values.none { e.pubkey in it.panel }) return
-                val inner = Nostr.json.decodeFromString(Event.serializer(), Nip44.open(e.content, keys, e.pubkey))
-                if (!inner.valid() || inner.kind != Kinds.TEAM_CHAT) return
-                val m = Nostr.json.decodeFromString(TeamMessage.serializer(), inner.content)
-                post(m.channel, inner.pubkey, m.text, inner.created_at)
-            }
             Kinds.LAP -> {
                 val stream = e.tag("s") ?: return
                 lap(stream).update { if (e.content in it) it else it + e.content }
             }
             Kinds.PROFILE -> runCatching { (Nostr.json.parseToJsonElement(e.content) as JsonObject)["name"]!!.jsonPrimitive.content }
                 .getOrNull()?.let { names[e.pubkey] = it }
+            else -> fromPanel(e)
+        }
+    }
+
+    /** What referees say: believed only from the round's own panel, and results only from a quorum of it. */
+    private suspend fun fromPanel(e: Event) {
+        val id = e.tag("g") ?: return
+        val round = rounds[id] ?: return
+        if (e.pubkey !in round.panel) return
+        when (e.kind) {
+            Kinds.PUBLIC_VIEW -> {
+                val city = e.tag("c") ?: return
+                val g = Views.decode(e.content).takeIf { it.id == id } ?: return
+                // Once we're in the game, our sealed view says more; until then, the public one will do.
+                if (_me.value?.id?.let { it in g.players || g.signups.any { u -> u.id == it } } != true) show(city, g, e)
+            }
+            Kinds.VIEW -> {
+                val g = Views.decode(Nip44.open(e.content, keys, e.pubkey)).takeIf { it.id == id } ?: return
+                show(current.entries.firstOrNull { it.value == g.id }?.key ?: key(g.city.name), g, e)
+            }
+            Kinds.OUTCOME -> {
+                // Every referee signs the same outcome; it counts once a quorum of the panel has.
+                val signers = outcomeVotes.getOrPut("$id|${e.content}") { ConcurrentHashMap.newKeySet() }.apply { add(e.pubkey) }
+                if (signers.size < round.panel.size / 2 + 1) return
+                val o = Nostr.json.decodeFromString(Outcome.serializer(), e.content)
+                o.verdicts.forEach { (v, r) -> if (verdicts.putIfAbsent(v, r) == null) answered.emit(v) }
+                val city = games.entries.firstOrNull { it.value.value?.id == id }?.key ?: ""
+                if (outcomes.putIfAbsent("$id|${o.seq}", o.awards.map { Award(it.user, city, id, it.points, it.reason, e.created_at * 1000) }) == null) {
+                    _ledger.value = outcomes.values.flatten().sortedBy { it.at }
+                    if (o.highlights.isNotEmpty()) _highlights.update { (it + o.highlights).distinct().sortedBy { h -> h.at } }
+                }
+            }
+            Kinds.PANEL -> {
+                // A silent referee was replaced: seal to the new panel once a majority of the one we knew says so.
+                val votes = panelVotes.getOrPut("$id|${e.content}") { ConcurrentHashMap.newKeySet() }.apply { add(e.pubkey) }
+                if (votes.size >= round.panel.size / 2 + 1) {
+                    rounds[id] = Round(id, Nostr.json.decodeFromString(PanelChange.serializer(), e.content).panel)
+                }
+            }
+            // Pings name nobody: try to open each; only the recipient can.
+            Kinds.PING -> runCatching { Nip44.open(e.content, keys, e.pubkey) }.getOrNull()?.let { pingBus.emit(Pings.decode(it)) }
+            Kinds.RADIO -> {
+                val city = e.tag("c") ?: return
+                feed(city).update { (it + Commentary(e.created_at * 1000, e.content)).sortedBy { c -> c.at }.takeLast(FEED_LENGTH) }
+            }
+            Kinds.TEAM_CHAT -> {
+                // Through the referees only: anyone else would be going around the cut-off.
+                val inner = Nostr.json.decodeFromString(Event.serializer(), Nip44.open(e.content, keys, e.pubkey))
+                if (!inner.valid() || inner.kind != Kinds.TEAM_CHAT) return
+                val m = Nostr.json.decodeFromString(TeamMessage.serializer(), inner.content)
+                post(m.channel, inner.pubkey, m.text, inner.created_at)
+            }
         }
     }
 
