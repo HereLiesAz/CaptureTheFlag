@@ -56,12 +56,14 @@ fun main() = runBlocking {
     val media = MediaStore(File(dir, "media"), elsewhere = peers::fetch)
     // VOSK_MODEL: a Vosk model directory (alphacephei.com/vosk/models), for hearing the challenge. Needs ffmpeg.
     val ears = env("VOSK_MODEL")?.let { VoskEars(File(it)) }
-    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, media = media::get, ears = ears),
+    // Evidence photos are private: each is opened with the key its reference carries.
+    val photos: suspend (String) -> ByteArray? = { ref -> Media.parse(ref).let { (url, key) -> media.get(url.substringAfterLast('/'))?.let { if (key != null) Media.open(it, key) else it } } }
+    val matcher = com.hereliesaz.capturetheflag.data.PhotoMatcher { shot, reference -> Matcher.score(photos(shot) ?: return@PhotoMatcher null, photos(reference) ?: return@PhotoMatcher null) }
+    val referee = Referee(keys, store, cities, roster, StreamJudge(keys.pub, matcher = matcher, media = media::get, ears = ears),
         // ATTESTATION_SIGNERS: SHA-256 (hex) of the app's signing certificate(s), comma-separated.
         attestation = if (env("ATTESTATION") == "off") null
             else KeyAttestation(signers = env("ATTESTATION_SIGNERS")?.split(',')?.map { it.trim().lowercase().replace(":", "") }?.filter(String::isNotEmpty)?.toSet().orEmpty()),
-        // The photo matcher: evidence photos are private, so each is opened with the key its reference carries.
-        photos = { ref -> Media.parse(ref).let { (url, key) -> media.get(url.substringAfterLast('/'))?.let { if (key != null) Media.open(it, key) else it } } })
+        photos = photos)
     referee.restore()
 
     println("node ${keys.pub} on ws://0.0.0.0:$port/ (media at /media/) with ${store.size()} events" + (archive?.let { ", archiving to ${it.root}" } ?: ""))
