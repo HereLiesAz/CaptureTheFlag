@@ -5,14 +5,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Releases are built by HereLiesAz/workflows (android-release): it passes -PversionCode and
-// -PversionName, and the upload key as KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD.
-// Local builds fall back to version.properties and stay unsigned. Nothing here increments anything.
+// Releases are built by HereLiesAz/workflows: android-play-release (Play) and
+// android-github-release (GitHub). Both rewrite version.properties (versionMajor..versionBuild);
+// Play also passes -PversionCodeOverride and -PversionName. Both hand over the upload key as
+// KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD. Local builds stay unsigned.
 val versions = Properties().apply { rootProject.file("version.properties").takeIf { it.exists() }?.inputStream()?.use(::load) }
-val releaseCode = (findProperty("versionCode") as String?)?.toInt()
-    ?: versions.getProperty("versionCode")?.toInt() ?: 1
+val releaseCode = listOf("versionCodeOverride", "versionCode").firstNotNullOfOrNull { findProperty(it) as String? }?.toInt()
+    ?: versions.getProperty("versionBuild")?.toInt()?.takeIf { it > 0 } ?: 1
 val releaseName = (findProperty("versionName") as String?)
-    ?: versions.getProperty("versionName")
     ?: listOf("versionMajor", "versionMinor", "versionPatch").joinToString(".") { versions.getProperty(it, "0") }
 val uploadKey = System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() }?.let(::file)?.takeIf { it.exists() }
 
