@@ -24,7 +24,7 @@ kotlin {
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
             // City onboarding: open-data lookups (Nominatim, WorldPop, Overpass).
             implementation("io.ktor:ktor-client-core:3.6.0")
-            implementation("io.ktor:ktor-client-cio:3.6.0")
+            implementation("io.ktor:ktor-client-cio:3.6.1")
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
         }
         // The node protocol (Nostr events, NIP-44, message types), shared by the phone and the node.
