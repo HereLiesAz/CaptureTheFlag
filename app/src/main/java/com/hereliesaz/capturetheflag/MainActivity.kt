@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        checkAppUpdate(this)
         val identity = Identity(this)
         val platform = AndroidPlatformServices(this, identity.node?.let(Media::base))
         // On a node: the real, networked game. Without one: the built-in single-phone test server,
