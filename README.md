@@ -225,3 +225,7 @@ AGP 9.4.1 · Kotlin 2.4.20 · Compose Multiplatform 1.12.1 · Material 3 · comp
 ## Workflows
 
 Do **not** invent repository-local workflow implementations. Choose existing automation or describe a new generalized capability in `.github/workflow-request.yml`. New implementations belong in `HereLiesAz/workflows`.
+
+## Android updates
+
+Android release builds check the installed distribution through AzNavRail 12.5. Update checks do not send location, identity, media, or game state. For a local Play bundle use `-PazPlayUpdates=true`; the GitHub APK has no Play update SDK.

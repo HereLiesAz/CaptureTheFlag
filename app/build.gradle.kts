@@ -16,7 +16,15 @@ val releaseName = (findProperty("versionName") as String?)
     ?: listOf("versionMajor", "versionMinor", "versionPatch").joinToString(".") { versions.getProperty(it, "0") }
 val uploadKey = System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() }?.let(::file)?.takeIf { it.exists() }
 
+// Play releases opt into the Play adapter; GitHub APKs omit the Play update SDK.
+val playUpdates = providers.gradleProperty("azPlayUpdates").map { it.toBooleanStrict() }
+    .orElse(providers.gradleProperty("releaseVersionCode").map { true }).orElse(false)
+
 android {
+    sourceSets.getByName("main").kotlin.srcDir(
+        if (playUpdates.get()) "src/playUpdates/kotlin" else "src/githubUpdates/kotlin"
+    )
+
     namespace = "com.hereliesaz.capturetheflag"
     compileSdk = 37
 
@@ -57,6 +65,8 @@ android {
 }
 
 dependencies {
+    implementation("com.github.HereLiesAz.AzNavRail:aznavrail-updates:12.5")
+    if (playUpdates.get()) implementation("com.github.HereLiesAz.AzNavRail:aznavrail-updates-play:12.5")
     implementation(project(":shared"))
 
     val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
