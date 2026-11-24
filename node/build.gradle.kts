@@ -17,7 +17,7 @@ distributions {
 
 dependencies {
     implementation(project(":shared"))
-    implementation("io.ktor:ktor-server-core:3.6.0")
+    implementation("io.ktor:ktor-server-core:3.6.1")
     implementation("io.ktor:ktor-server-netty:3.6.0")
     implementation("io.ktor:ktor-server-websockets:3.6.0")
     // Following peer nodes: their relays and media stores.
